@@ -1,0 +1,54 @@
+name: runanywhere_copilot
+description: Offline-first AI mobile app with RunAnywhere SDK — Meeting Notes & Document Translator
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: '>=3.10.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # RunAnywhere SDK — Core + backends
+  runanywhere: ^0.15.11
+  runanywhere_onnx: ^0.15.11        # STT, TTS, VAD (Whisper + Piper)
+  runanywhere_llamacpp: ^0.15.11    # LLM text generation (llama.cpp)
+
+  # Audio recording
+  record: ^5.0.4
+  audioplayers: ^6.0.0
+
+  # File picking (PDF)
+  file_picker: ^8.0.0
+
+  # PDF text extraction
+  syncfusion_flutter_pdf: ^26.1.40
+
+  # OCR (ML Kit for scanned PDFs)
+  google_mlkit_text_recognition: ^0.13.0
+
+  # Permissions
+  permission_handler: ^11.3.0
+
+  # Path utilities
+  path_provider: ^2.1.3
+  path: ^1.9.0
+
+  # Typography
+  google_fonts: ^6.2.1
+
+  # UI helpers
+  flutter_markdown: ^0.7.3
+  share_plus: ^10.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/
