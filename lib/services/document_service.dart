@@ -136,7 +136,8 @@ $text
 TRANSLATION:''';
 
     try {
-      final result = await RunAnywhere.generate(
+      // Use streaming API and collect tokens (generate() returns LLMGenerationResult, not String)
+      final result = await RunAnywhere.generateStream(
         prompt,
         options: LLMGenerationOptions(
           maxTokens: 512,
@@ -144,7 +145,11 @@ TRANSLATION:''';
           systemPrompt: 'You are a precise translator. Translate to $targetLanguage.',
         ),
       );
-      return result.trim();
+      final buffer = StringBuffer();
+      await for (final token in result.stream) {
+        buffer.write(token);
+      }
+      return buffer.toString().trim();
     } catch (e) {
       return '[translation error: $e]';
     }
