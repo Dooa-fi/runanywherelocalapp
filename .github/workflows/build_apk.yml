@@ -3,7 +3,10 @@ name: Build Android APK
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch: # Allows you to manually trigger the build from the Actions tab
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
   build:
@@ -25,14 +28,28 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Regenerate Android build files
+        run: |
+          # Save our custom AndroidManifest with permissions
+          cp android/app/src/main/AndroidManifest.xml /tmp/AndroidManifest.xml
+          # Remove incomplete hand-written android/ and let Flutter generate proper boilerplate
+          rm -rf android/
+          flutter create --org com.hackathon --project-name runanywhere_copilot --platforms android .
+          # Restore our manifest (RECORD_AUDIO, INTERNET, largeHeap)
+          cp /tmp/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+          # Set minSdkVersion 24 (required by RunAnywhere SDK)
+          sed -i 's/minSdk.*/minSdk = 24/' android/app/build.gradle.kts 2>/dev/null || \
+          sed -i 's/minSdkVersion.*/minSdkVersion 24/' android/app/build.gradle 2>/dev/null || true
+          # Enable largeHeap via manifest (already in our manifest)
+
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build APK release
+      - name: Build APK (release)
         run: flutter build apk --release
 
-      - name: Upload generated APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: runanywhere-offline-copilot-apk
+          name: runanywhere-offline-copilot
           path: build/app/outputs/flutter-apk/app-release.apk

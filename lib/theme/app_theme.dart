@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 class AppTheme {
   // Brand palette — deep navy + electric cyan accent
@@ -14,10 +13,13 @@ class AppTheme {
   static const Color _warning = Color(0xFFF0A500);
   static const Color _error = Color(0xFFFF6B6B);
 
+  static const String _fontFamily = 'Inter';
+
   static ThemeData get darkTheme {
     return ThemeData(
       useMaterial3: true,
       brightness: Brightness.dark,
+      fontFamily: _fontFamily,
       scaffoldBackgroundColor: _bgBase,
       colorScheme: const ColorScheme.dark(
         primary: _accent,
@@ -27,22 +29,21 @@ class AppTheme {
         onSurface: _textPrimary,
         error: _error,
       ),
-      textTheme: GoogleFonts.interTextTheme(
-        const TextTheme(
-          displayLarge: TextStyle(color: _textPrimary, fontWeight: FontWeight.w700),
-          displayMedium: TextStyle(color: _textPrimary, fontWeight: FontWeight.w600),
-          titleLarge: TextStyle(color: _textPrimary, fontWeight: FontWeight.w600),
-          titleMedium: TextStyle(color: _textPrimary, fontWeight: FontWeight.w500),
-          bodyLarge: TextStyle(color: _textPrimary),
-          bodyMedium: TextStyle(color: _textSecondary),
-          labelLarge: TextStyle(color: _textPrimary, fontWeight: FontWeight.w600),
-        ),
+      textTheme: const TextTheme(
+        displayLarge: TextStyle(color: _textPrimary, fontWeight: FontWeight.w700),
+        displayMedium: TextStyle(color: _textPrimary, fontWeight: FontWeight.w600),
+        titleLarge: TextStyle(color: _textPrimary, fontWeight: FontWeight.w600),
+        titleMedium: TextStyle(color: _textPrimary, fontWeight: FontWeight.w500),
+        bodyLarge: TextStyle(color: _textPrimary),
+        bodyMedium: TextStyle(color: _textSecondary),
+        labelLarge: TextStyle(color: _textPrimary, fontWeight: FontWeight.w600),
       ),
-      appBarTheme: AppBarTheme(
+      appBarTheme: const AppBarTheme(
         backgroundColor: _bgBase,
         foregroundColor: _textPrimary,
         elevation: 0,
-        titleTextStyle: GoogleFonts.inter(
+        titleTextStyle: TextStyle(
+          fontFamily: _fontFamily,
           fontSize: 18,
           fontWeight: FontWeight.w700,
           color: _textPrimary,
@@ -69,7 +70,7 @@ class AppTheme {
           backgroundColor: _accent,
           foregroundColor: _bgBase,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          textStyle: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 15),
+          textStyle: const TextStyle(fontFamily: _fontFamily, fontWeight: FontWeight.w700, fontSize: 15),
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
         ),
       ),
@@ -78,13 +79,13 @@ class AppTheme {
           foregroundColor: _accent,
           side: const BorderSide(color: _accent),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          textStyle: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 15),
+          textStyle: const TextStyle(fontFamily: _fontFamily, fontWeight: FontWeight.w600, fontSize: 15),
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
         ),
       ),
       chipTheme: ChipThemeData(
         backgroundColor: _bgCard,
-        labelStyle: GoogleFonts.inter(color: _textSecondary, fontSize: 12),
+        labelStyle: const TextStyle(color: _textSecondary, fontSize: 12),
         side: const BorderSide(color: Color(0xFF30363D)),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       ),

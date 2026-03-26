@@ -2,12 +2,11 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'package:runanywhere/runanywhere.dart';
 
-/// Handles PDF text extraction (native text or OCR) + LLM translation.
+/// Handles PDF text extraction + LLM translation.
 class DocumentService {
   // ── PDF Picking ────────────────────────────────────────────────────────────
 
@@ -26,8 +25,8 @@ class DocumentService {
 
   // ── Text Extraction ───────────────────────────────────────────────────────
 
-  /// Extract text from each PDF page. Uses direct text extraction first;
-  /// falls back to ML Kit OCR for scanned image pages.
+  /// Extract text from each PDF page using native text extraction.
+  /// Scanned/image pages are detected but OCR requires additional setup.
   Future<List<PageContent>> extractPages(File pdfFile) async {
     final bytes = await pdfFile.readAsBytes();
     final pages = <PageContent>[];
@@ -40,9 +39,7 @@ class DocumentService {
     }
 
     for (int i = 0; i < document.pages.count; i++) {
-      final page = document.pages[i];
-
-      // Try native text extraction first
+      // Try native text extraction
       final extractor = PdfTextExtractor(document);
       String text = '';
       try {
@@ -53,45 +50,21 @@ class DocumentService {
         // Native text found — use it directly
         pages.add(PageContent(pageNumber: i + 1, text: text, isOcr: false));
       } else {
-        // Likely scanned — render page → image → OCR
-        final ocrText = await _ocrPage(document, i, bytes);
-        pages.add(PageContent(pageNumber: i + 1, text: ocrText, isOcr: true));
+        // Scanned page — inform that OCR is limited in this MVP
+        pages.add(PageContent(
+          pageNumber: i + 1,
+          text: text.isNotEmpty
+              ? text
+              : '[Page ${i + 1} appears to be a scanned image. '
+                'Text-based PDF pages are fully supported. '
+                'Scanned page OCR will be available in a future update.]',
+          isOcr: true,
+        ));
       }
     }
 
     document.dispose();
     return pages;
-  }
-
-  /// Renders a single PDF page to an image file and runs ML Kit OCR on it.
-  Future<String> _ocrPage(PdfDocument document, int pageIndex, Uint8List pdfBytes) async {
-    try {
-      // Render the page to bitmap
-      final page = document.pages[pageIndex];
-      final image = page.convertToImage(
-        width: 1200,
-        height: (1200 * page.size.height / page.size.width).round(),
-      );
-
-      final dir = await getTemporaryDirectory();
-      final imgPath = p.join(dir.path, 'page_${pageIndex}_${DateTime.now().millisecondsSinceEpoch}.png');
-      await File(imgPath).writeAsBytes(image);
-
-      // ML Kit text recognition
-      final inputImage = InputImage.fromFilePath(imgPath);
-      final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
-      final recognized = await recognizer.processImage(inputImage);
-      await recognizer.close();
-
-      // Clean up temp image
-      try { await File(imgPath).delete(); } catch (_) {}
-
-      return recognized.text.trim().isEmpty
-          ? '[No text detected on this page]'
-          : recognized.text.trim();
-    } catch (e) {
-      return '[OCR error: $e]';
-    }
   }
 
   // ── Translation ────────────────────────────────────────────────────────────
@@ -106,6 +79,21 @@ class DocumentService {
   ) async* {
     for (int pi = 0; pi < pages.length; pi++) {
       final page = pages[pi];
+
+      // Skip pages that are just placeholders (scanned)
+      if (page.text.startsWith('[Page ') && page.text.endsWith('update.]')) {
+        yield TranslationProgress(
+          pageIndex: pi,
+          pageNumber: page.pageNumber,
+          totalPages: pages.length,
+          chunkIndex: 1,
+          totalChunks: 1,
+          partialPageText: page.text,
+          isDone: pi == pages.length - 1,
+        );
+        continue;
+      }
+
       final chunks = _splitIntoChunks(page.text, _chunkSize);
       final translatedParts = <String>[];
 
@@ -118,7 +106,7 @@ class DocumentService {
           pageIndex: pi,
           pageNumber: page.pageNumber,
           totalPages: pages.length,
-          chunkIndex: ci,
+          chunkIndex: ci + 1,
           totalChunks: chunks.length,
           partialPageText: translatedParts.join(' '),
           isDone: false,
