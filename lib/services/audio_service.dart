@@ -62,8 +62,9 @@ class AudioService {
   /// Transcribe PCM16 bytes using RunAnywhere Whisper STT.
   Future<String> transcribe(Uint8List pcmBytes) async {
     try {
-      final text = await RunAnywhere.transcribe(pcmBytes);
-      return text ?? '';
+      final result = await RunAnywhere.transcribe(pcmBytes);
+      // SDK returns an object with .text property
+      return result.text ?? '';
     } catch (e) {
       return '[transcription error: $e]';
     }
@@ -100,10 +101,9 @@ Output only the Markdown report, nothing else.''';
     try {
       final result = await RunAnywhere.generateStream(
         prompt,
-        options: LLMGenerationOptions(
+        options: const LLMGenerationOptions(
           maxTokens: 600,
           temperature: 0.3,
-          systemPrompt: 'You are a helpful, precise assistant. Respond in well-formatted Markdown.',
         ),
       );
       await for (final token in result.stream) {

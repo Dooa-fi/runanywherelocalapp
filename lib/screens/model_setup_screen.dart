@@ -82,11 +82,6 @@ class _ModelSetupScreenState extends State<ModelSetupScreen>
                   child: Container(
                     width: 100, height: 100,
                     decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [colors.accent, colors.accentSecondary],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
                       borderRadius: BorderRadius.circular(28),
                       boxShadow: [
                         BoxShadow(
@@ -95,7 +90,10 @@ class _ModelSetupScreenState extends State<ModelSetupScreen>
                         ),
                       ],
                     ),
-                    child: const Icon(Icons.bolt_rounded, size: 56, color: Colors.black),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(28),
+                      child: Image.asset('assets/logo.png', fit: BoxFit.cover),
+                    ),
                   ),
                 ),
               ),

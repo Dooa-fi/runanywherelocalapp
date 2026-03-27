@@ -2,91 +2,145 @@ import 'package:runanywhere/runanywhere.dart';
 import 'package:runanywhere_onnx/runanywhere_onnx.dart';
 import 'package:runanywhere_llamacpp/runanywhere_llamacpp.dart';
 
-/// Central place to register all AI models used in the app.
-/// Call once at startup after backends are registered.
+/// Central place to register & manage all AI models.
+/// Model IDs and URLs match the official RunAnywhere starter example.
 class ModelManager {
-  // Model IDs
-  static const String sttModelId = 'whisper-tiny-en';
-  static const String llmModelId = 'smollm2-360m';
-  static const String ttsModelId = 'piper-amy-medium';
+  // ── Model IDs (must match official SDK model registry) ────────────────────
+  static const String sttModelId = 'sherpa-onnx-whisper-tiny.en';
+  static const String llmModelId = 'smollm2-360m-instruct-q8_0';
+  static const String ttsModelId = 'vits-piper-en_US-lessac-medium';
 
+  /// Register all models with their backends. Call once after SDK init.
   static void registerModels() {
-    // ── STT: Whisper Tiny English (~75 MB) ──────────────────────────────────
+    // ── STT: Whisper Tiny English ──────────────────────────────────────────
     Onnx.addModel(
       id: sttModelId,
-      name: 'Whisper Tiny (English)',
+      name: 'Sherpa Whisper Tiny (ONNX)',
       url: 'https://github.com/RunanywhereAI/sherpa-onnx/releases/download/'
           'runanywhere-models-v1/sherpa-onnx-whisper-tiny.en.tar.gz',
       modality: ModelCategory.speechRecognition,
-      memoryRequirement: 75 * 1000 * 1000,
     );
 
-    // ── TTS: Piper Amy Medium (~50 MB) ──────────────────────────────────────
+    // ── TTS: Piper Lessac Medium ──────────────────────────────────────────
     Onnx.addModel(
       id: ttsModelId,
-      name: 'Piper Amy (English)',
+      name: 'Piper TTS (US English - Medium)',
       url: 'https://github.com/RunanywhereAI/sherpa-onnx/releases/download/'
-          'runanywhere-models-v1/vits-piper-en_US-amy-medium.tar.gz',
+          'runanywhere-models-v1/vits-piper-en_US-lessac-medium.tar.gz',
       modality: ModelCategory.speechSynthesis,
-      memoryRequirement: 50 * 1000 * 1000,
     );
 
-    // ── LLM: SmolLM2 360M Q4_K_M (~250 MB, good mobile trade-off) ──────────
+    // ── LLM: SmolLM2 360M Q8 ─────────────────────────────────────────────
     LlamaCpp.addModel(
       id: llmModelId,
-      name: 'SmolLM2 360M (Quantized)',
-      url: 'https://huggingface.co/bartowski/SmolLM2-360M-Instruct-GGUF/'
-          'resolve/main/SmolLM2-360M-Instruct-Q4_K_M.gguf',
-      memoryRequirement: 250 * 1000 * 1000,
+      name: 'SmolLM2 360M Instruct Q8_0',
+      url: 'https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF/'
+          'resolve/main/smollm2-360m-instruct-q8_0.gguf',
+      memoryRequirement: 400000000, // ~400 MB
     );
   }
 
-  // ── State helpers ──────────────────────────────────────────────────────────
+  // ── State helpers ─────────────────────────────────────────────────────────
   static bool get sttReady => RunAnywhere.isSTTModelLoaded;
   static bool get ttsReady => RunAnywhere.isTTSVoiceLoaded;
   static bool get llmReady => RunAnywhere.isModelLoaded;
 
-  /// Download + load all three models, reporting progress via callback.
+  /// Check if a specific model has been downloaded already.
+  static Future<bool> isModelDownloaded(String modelId) async {
+    final models = await RunAnywhere.availableModels();
+    final model = models.where((m) => m.id == modelId).firstOrNull;
+    return model?.localPath != null;
+  }
+
+  // ── Download + load all models ────────────────────────────────────────────
+
+  /// Downloads and loads STT, LLM, and optionally TTS.
+  /// Yields [ModelLoadEvent] for UI progress tracking.
+  /// TTS failure is non-fatal — the rest of the app still works.
   static Stream<ModelLoadEvent> loadAll() async* {
-    yield ModelLoadEvent(model: 'STT', phase: 'Downloading Whisper…', progress: 0);
-    await for (final p in RunAnywhere.downloadModel(sttModelId)) {
-      yield ModelLoadEvent(
-        model: 'STT',
-        phase: 'Downloading Whisper…',
-        progress: p.percentage,
-      );
-      if (p.state.isCompleted) break;
+    // ── 1. STT ──────────────────────────────────────────────────────────────
+    yield ModelLoadEvent(model: 'STT', phase: 'Checking STT model…', progress: 0);
+    final sttDownloaded = await isModelDownloaded(sttModelId);
+
+    if (!sttDownloaded) {
+      yield ModelLoadEvent(model: 'STT', phase: 'Downloading Whisper…', progress: 0);
+      try {
+        await for (final p in RunAnywhere.downloadModel(sttModelId)) {
+          yield ModelLoadEvent(
+            model: 'STT', phase: 'Downloading Whisper…', progress: p.percentage,
+          );
+          if (p.state.isCompleted || p.state.isFailed) break;
+        }
+      } catch (e) {
+        yield ModelLoadEvent(model: 'STT', phase: 'STT download error: $e', progress: 0);
+        rethrow;
+      }
     }
+
     yield ModelLoadEvent(model: 'STT', phase: 'Loading Whisper…', progress: 1.0);
-    await RunAnywhere.loadSTTModel(sttModelId);
-
-    yield ModelLoadEvent(model: 'TTS', phase: 'Downloading TTS voice…', progress: 0);
-    await for (final p in RunAnywhere.downloadModel(ttsModelId)) {
-      yield ModelLoadEvent(
-        model: 'TTS',
-        phase: 'Downloading TTS voice…',
-        progress: p.percentage,
-      );
-      if (p.state.isCompleted) break;
+    try {
+      await RunAnywhere.loadSTTModel(sttModelId);
+    } catch (e) {
+      yield ModelLoadEvent(model: 'STT', phase: 'STT load error: $e', progress: 0);
+      rethrow;
     }
-    yield ModelLoadEvent(model: 'TTS', phase: 'Loading TTS voice…', progress: 1.0);
-    await RunAnywhere.loadTTSVoice(ttsModelId);
 
-    yield ModelLoadEvent(model: 'LLM', phase: 'Downloading SmolLM2…', progress: 0);
-    await for (final p in RunAnywhere.downloadModel(llmModelId)) {
-      yield ModelLoadEvent(
-        model: 'LLM',
-        phase: 'Downloading SmolLM2…',
-        progress: p.percentage,
-      );
-      if (p.state.isCompleted) break;
+    // ── 2. LLM ──────────────────────────────────────────────────────────────
+    yield ModelLoadEvent(model: 'LLM', phase: 'Checking LLM model…', progress: 0);
+    final llmDownloaded = await isModelDownloaded(llmModelId);
+
+    if (!llmDownloaded) {
+      yield ModelLoadEvent(model: 'LLM', phase: 'Downloading SmolLM2…', progress: 0);
+      try {
+        await for (final p in RunAnywhere.downloadModel(llmModelId)) {
+          yield ModelLoadEvent(
+            model: 'LLM', phase: 'Downloading SmolLM2…', progress: p.percentage,
+          );
+          if (p.state.isCompleted || p.state.isFailed) break;
+        }
+      } catch (e) {
+        yield ModelLoadEvent(model: 'LLM', phase: 'LLM download error: $e', progress: 0);
+        rethrow;
+      }
     }
+
     yield ModelLoadEvent(model: 'LLM', phase: 'Loading SmolLM2…', progress: 1.0);
-    await RunAnywhere.loadModel(llmModelId);
+    try {
+      await RunAnywhere.loadModel(llmModelId);
+    } catch (e) {
+      yield ModelLoadEvent(model: 'LLM', phase: 'LLM load error: $e', progress: 0);
+      rethrow;
+    }
 
-    yield ModelLoadEvent(model: 'ALL', phase: 'All models ready!', progress: 1.0, done: true);
+    // ── 3. TTS (optional — failure is non-fatal) ────────────────────────────
+    yield ModelLoadEvent(model: 'TTS', phase: 'Checking TTS model…', progress: 0);
+    try {
+      final ttsDownloaded = await isModelDownloaded(ttsModelId);
+
+      if (!ttsDownloaded) {
+        yield ModelLoadEvent(model: 'TTS', phase: 'Downloading TTS voice…', progress: 0);
+        await for (final p in RunAnywhere.downloadModel(ttsModelId)) {
+          yield ModelLoadEvent(
+            model: 'TTS', phase: 'Downloading TTS voice…', progress: p.percentage,
+          );
+          if (p.state.isCompleted || p.state.isFailed) break;
+        }
+      }
+
+      yield ModelLoadEvent(model: 'TTS', phase: 'Loading TTS voice…', progress: 1.0);
+      await RunAnywhere.loadTTSVoice(ttsModelId);
+    } catch (e) {
+      // TTS failure is non-fatal — app works fine without it
+      yield ModelLoadEvent(model: 'TTS', phase: 'TTS skipped (optional): $e', progress: 1.0);
+    }
+
+    yield ModelLoadEvent(
+      model: 'ALL', phase: 'All models ready!', progress: 1.0, done: true,
+    );
   }
 }
+
+// ── Event class ──────────────────────────────────────────────────────────────
 
 class ModelLoadEvent {
   final String model;
@@ -100,4 +154,12 @@ class ModelLoadEvent {
     required this.progress,
     this.done = false,
   });
+}
+
+// ── Extension from official RunAnywhere starter ──────────────────────────────
+
+extension DownloadProgressStateExt on DownloadProgressState {
+  bool get isCompleted => this == DownloadProgressState.completed;
+  bool get isFailed => this == DownloadProgressState.failed;
+  bool get isCancelled => this == DownloadProgressState.cancelled;
 }

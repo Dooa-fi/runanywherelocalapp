@@ -139,10 +139,9 @@ TRANSLATION:''';
       // Use streaming API and collect tokens (generate() returns LLMGenerationResult, not String)
       final result = await RunAnywhere.generateStream(
         prompt,
-        options: LLMGenerationOptions(
+        options: const LLMGenerationOptions(
           maxTokens: 512,
           temperature: 0.1,
-          systemPrompt: 'You are a precise translator. Translate to $targetLanguage.',
         ),
       );
       final buffer = StringBuffer();
