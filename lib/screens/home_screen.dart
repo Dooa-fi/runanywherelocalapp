@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'meeting_notes_screen.dart';
 import 'doc_translator_screen.dart';
+import 'conversation_screen.dart';
 import 'model_setup_screen.dart';
 import '../services/model_manager.dart';
 import '../theme/app_theme.dart';
@@ -20,6 +21,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   final _tabs = const [
     _TabInfo(label: 'Meeting Notes', icon: Icons.mic_rounded),
     _TabInfo(label: 'Doc Translator', icon: Icons.translate_rounded),
+    _TabInfo(label: 'Conversation', icon: Icons.forum_rounded),
   ];
 
   @override
@@ -106,6 +108,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           children: const [
             MeetingNotesScreen(),
             DocTranslatorScreen(),
+            ConversationScreen(),
           ],
         ),
       ),

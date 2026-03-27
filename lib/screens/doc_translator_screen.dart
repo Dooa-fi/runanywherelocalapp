@@ -18,6 +18,7 @@ class DocTranslatorScreen extends StatefulWidget {
 
 class _DocTranslatorScreenState extends State<DocTranslatorScreen> {
   final DocumentService _docService = DocumentService();
+  CancellationFlag? _cancelFlag;
 
   _DocState _state = _DocState.idle;
   String _statusMsg = '';
@@ -30,10 +31,10 @@ class _DocTranslatorScreenState extends State<DocTranslatorScreen> {
   int _viewPageIndex = 0;
 
   // Language selection
-  String _targetLang = 'Spanish';
+  String _targetLang = 'Hindi';
   final _languages = [
-    'Spanish', 'French', 'German', 'Portuguese', 'Italian',
-    'Japanese', 'Korean', 'Chinese (Simplified)', 'Hindi', 'Arabic',
+    'English', 'Hindi', 'Spanish', 'French', 'German', 'Portuguese', 'Italian',
+    'Russian', 'Japanese', 'Korean', 'Chinese (Simplified)', 'Arabic',
   ];
 
   // ── Actions ────────────────────────────────────────────────────────────────
@@ -41,6 +42,8 @@ class _DocTranslatorScreenState extends State<DocTranslatorScreen> {
   Future<void> _pickAndTranslate() async {
     final file = await _docService.pickPdf();
     if (file == null) return;
+
+    _cancelFlag = CancellationFlag();
 
     setState(() {
       _state = _DocState.extracting;
@@ -58,14 +61,17 @@ class _DocTranslatorScreenState extends State<DocTranslatorScreen> {
       return;
     }
 
+    if (_cancelFlag?.isCancelled ?? false) return;
+
     setState(() {
       _extractedPages = pages;
       _state = _DocState.translating;
       _statusMsg = 'Translating with SmolLM2…';
     });
 
-    await for (final event in _docService.translatePages(pages, _targetLang)) {
-      if (!mounted) return;
+    await for (final event in _docService.translatePages(pages, _targetLang, cancelFlag: _cancelFlag!)) {
+      if (!mounted || (_cancelFlag?.isCancelled ?? false)) break;
+      
       setState(() {
         _translated[event.pageIndex] = event.partialPageText;
         _currentPageIndex = event.pageIndex;
@@ -79,10 +85,21 @@ class _DocTranslatorScreenState extends State<DocTranslatorScreen> {
     }
   }
 
+  void _stopTranslation() {
+    _cancelFlag?.cancel();
+    setState(() {
+      _state = _DocState.done;
+      _statusMsg = 'Translation stopped by user.';
+    });
+  }
+
   Future<void> _exportText() async {
     final buffer = StringBuffer();
     for (int i = 0; i < _extractedPages.length; i++) {
       buffer.writeln('=== Page ${_extractedPages[i].pageNumber} ===\n');
+      buffer.writeln('--- ORIGINAL TEXT ---');
+      buffer.writeln(_extractedPages[i].text);
+      buffer.writeln('\n--- TRANSLATED TEXT ---');
       buffer.writeln(_translated[i] ?? '[not yet translated]');
       buffer.writeln();
     }
@@ -93,6 +110,7 @@ class _DocTranslatorScreenState extends State<DocTranslatorScreen> {
   }
 
   void _reset() {
+    _cancelFlag?.cancel();
     setState(() {
       _state = _DocState.idle;
       _extractedPages = [];
@@ -124,17 +142,37 @@ class _DocTranslatorScreenState extends State<DocTranslatorScreen> {
                     icon: Icons.translate_rounded,
                     color: colors.accentSecondary,
                     title: 'Document Translator',
-                    subtitle: 'PDF → OCR → Translate — 100% offline',
+                    subtitle: 'PDF → Translate — 100% offline',
                   ),
                   const SizedBox(height: 24),
 
                   // Language selector
-                  _LanguageSelector(
-                    value: _targetLang,
-                    languages: _languages,
-                    onChanged: (v) => setState(() => _targetLang = v),
-                    colors: colors,
-                    enabled: _state == _DocState.idle || _state == _DocState.done,
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _LanguageSelector(
+                          label: 'Source',
+                          value: 'Auto-detect',
+                          languages: const ['Auto-detect'],
+                          onChanged: (v) {},
+                          colors: colors,
+                          enabled: false,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Icon(Icons.arrow_forward_rounded, color: colors.textSecondary, size: 20),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: _LanguageSelector(
+                          label: 'Target',
+                          value: _targetLang,
+                          languages: _languages,
+                          onChanged: (v) => setState(() => _targetLang = v),
+                          colors: colors,
+                          enabled: _state == _DocState.idle || _state == _DocState.done,
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 20),
 
@@ -147,14 +185,30 @@ class _DocTranslatorScreenState extends State<DocTranslatorScreen> {
                     colors: colors,
                   ),
 
-                  // Progress
+                  // Progress & Cancel
                   if (_state == _DocState.extracting || _state == _DocState.translating) ...[
                     const SizedBox(height: 20),
-                    _ProgressSection(
-                      progress: _progress,
-                      statusMsg: _statusMsg,
-                      colors: colors,
-                      pages: _extractedPages,
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _ProgressSection(
+                            progress: _progress,
+                            statusMsg: _statusMsg,
+                            colors: colors,
+                            pages: _extractedPages,
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        IconButton(
+                          onPressed: _stopTranslation,
+                          style: IconButton.styleFrom(
+                            backgroundColor: colors.error.withOpacity(0.1),
+                            foregroundColor: colors.error,
+                          ),
+                          icon: const Icon(Icons.stop_rounded),
+                          tooltip: 'Stop Translation',
+                        ),
+                      ],
                     ),
                   ],
 
@@ -172,7 +226,7 @@ class _DocTranslatorScreenState extends State<DocTranslatorScreen> {
                   const SizedBox(height: 24),
 
                   // Translated pages view
-                  if (_translated.isNotEmpty) ...[
+                  if (_translated.isNotEmpty || _extractedPages.isNotEmpty) ...[
                     _PageNavBar(
                       pages: _extractedPages,
                       currentIndex: _viewPageIndex,
@@ -241,6 +295,7 @@ class _SectionHeader extends StatelessWidget {
 }
 
 class _LanguageSelector extends StatelessWidget {
+  final String label;
   final String value;
   final List<String> languages;
   final ValueChanged<String> onChanged;
@@ -248,38 +303,41 @@ class _LanguageSelector extends StatelessWidget {
   final bool enabled;
 
   const _LanguageSelector({
-    required this.value, required this.languages, required this.onChanged,
+    required this.label, required this.value, required this.languages, required this.onChanged,
     required this.colors, required this.enabled,
   });
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
       decoration: BoxDecoration(
         color: colors.bgCard,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(10),
         border: Border.all(color: const Color(0xFF30363D)),
       ),
-      child: Row(children: [
-        Icon(Icons.language_rounded, color: colors.accentSecondary, size: 20),
-        const SizedBox(width: 12),
-        Text('Target Language', style: TextStyle(color: colors.textSecondary, fontSize: 13)),
-        const Spacer(),
-        DropdownButtonHideUnderline(
-          child: DropdownButton<String>(
-            value: value,
-            dropdownColor: colors.bgCard,
-            style: TextStyle(color: colors.textPrimary, fontWeight: FontWeight.w600, fontSize: 14),
-            onChanged: enabled ? (v) => onChanged(v!) : null,
-            items: languages.map((l) => DropdownMenuItem(value: l, child: Text(l))).toList(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(label, style: TextStyle(color: colors.textSecondary, fontSize: 10, fontWeight: FontWeight.w600)),
+          DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              value: value,
+              isExpanded: true,
+              dropdownColor: colors.bgCard,
+              style: TextStyle(color: enabled ? colors.textPrimary : colors.textSecondary, fontWeight: FontWeight.w600, fontSize: 13),
+              onChanged: enabled ? (v) => onChanged(v!) : null,
+              items: languages.map((l) => DropdownMenuItem(value: l, child: Text(l, overflow: TextOverflow.ellipsis))).toList(),
+            ),
           ),
-        ),
-      ]),
+        ],
+      ),
     );
   }
 }
 
+// UploadArea, ProgressSection, StatusChip, PageNavBar kept intact
 class _UploadArea extends StatelessWidget {
   final _DocState state;
   final VoidCallback? onTap;
@@ -295,31 +353,26 @@ class _UploadArea extends StatelessWidget {
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 300),
-        height: 130,
+        height: 110,
         decoration: BoxDecoration(
           color: colors.bgCard,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
             color: isActive ? colors.accentSecondary.withOpacity(0.6) : const Color(0xFF30363D),
             width: isActive ? 1.5 : 1,
-            style: isActive ? BorderStyle.solid : BorderStyle.solid,
           ),
         ),
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
           Icon(
-            state == _DocState.done ? Icons.check_circle_outline_rounded : Icons.upload_file_rounded,
+            state == _DocState.done ? Icons.check_circle_outline_rounded : Icons.file_upload_outlined,
             color: state == _DocState.done ? colors.success : colors.accentSecondary,
-            size: 36,
+            size: 32,
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
           Text(
-            state == _DocState.done ? 'Translation done — tap to load another PDF' : 'Tap to pick a PDF',
+            state == _DocState.done ? 'Translation done — load another PDF' : 'Tap to pick a PDF Document',
             style: TextStyle(color: colors.textSecondary, fontSize: 13),
           ),
-          if (state == _DocState.idle) ...[
-            const SizedBox(height: 4),
-            Text('Supports text-based & scanned PDFs', style: TextStyle(color: colors.textSecondary.withOpacity(0.6), fontSize: 11)),
-          ],
         ]),
       ),
     );
@@ -446,56 +499,99 @@ class _TranslatedPageView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: colors.bgCard,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF30363D)),
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        // Header
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-          child: Row(children: [
-            Icon(Icons.article_rounded, color: colors.accentSecondary, size: 16),
-            const SizedBox(width: 8),
-            Text('Page ${pageContent.pageNumber}',
-              style: TextStyle(color: colors.accentSecondary, fontWeight: FontWeight.w700, fontSize: 13)),
-            const SizedBox(width: 8),
-            if (pageContent.isOcr)
+    return Column(
+      children: [
+        // Original Text Block
+        Container(
+          width: double.infinity,
+          decoration: BoxDecoration(
+            color: colors.bgCard,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: const Color(0xFF30363D)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
                 decoration: BoxDecoration(
-                  color: colors.warning.withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(6),
+                  color: const Color(0xFF30363D).withOpacity(0.4),
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(13)),
                 ),
-                child: Text('OCR', style: TextStyle(color: colors.warning, fontSize: 10, fontWeight: FontWeight.w700)),
+                child: Text('Original Document Text', style: TextStyle(color: colors.textSecondary, fontSize: 12, fontWeight: FontWeight.bold)),
               ),
-            const Spacer(),
-            GestureDetector(
-              onTap: () {
-                Clipboard.setData(ClipboardData(text: translatedText ?? ''));
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied!')));
-              },
-              child: Icon(Icons.copy_rounded, color: colors.textSecondary, size: 16),
-            ),
-          ]),
-        ),
-        const Divider(height: 18, thickness: 1, color: Color(0xFF30363D)),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-          child: translatedText == null || translatedText!.isEmpty
-            ? Row(children: [
-                SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: colors.accentSecondary)),
-                const SizedBox(width: 10),
-                Text('Translating…', style: TextStyle(color: colors.textSecondary, fontSize: 13)),
-              ])
-            : SelectableText(
-                translatedText!,
-                style: TextStyle(color: colors.textPrimary, fontSize: 14, height: 1.65),
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: SelectableText(
+                  pageContent.text,
+                  style: TextStyle(color: colors.textPrimary.withOpacity(0.8), fontSize: 13, height: 1.5),
+                ),
               ),
+            ],
+          ),
         ),
-      ]),
+        
+        const SizedBox(height: 12),
+        const Icon(Icons.swap_vert_rounded, color: Colors.grey, size: 24),
+        const SizedBox(height: 12),
+        
+        // Translated Text Block
+        Container(
+          width: double.infinity,
+          decoration: BoxDecoration(
+            color: colors.bgCard,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: colors.accentSecondary.withOpacity(0.5)),
+            boxShadow: [
+              BoxShadow(
+                color: colors.accentSecondary.withOpacity(0.05),
+                blurRadius: 10, spreadRadius: 2,
+              )
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+                decoration: BoxDecoration(
+                  color: colors.accentSecondary.withOpacity(0.15),
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(13)),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Translated Text ($targetLang)', style: TextStyle(color: colors.accentSecondary, fontSize: 12, fontWeight: FontWeight.bold)),
+                    GestureDetector(
+                      onTap: () {
+                        Clipboard.setData(ClipboardData(text: translatedText ?? ''));
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied!')));
+                      },
+                      child: Icon(Icons.copy_rounded, color: colors.accentSecondary, size: 14),
+                    ),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: (translatedText == null || translatedText!.isEmpty)
+                  ? Row(children: [
+                      SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: colors.accentSecondary)),
+                      const SizedBox(width: 10),
+                      Text('Translating…', style: TextStyle(color: colors.textSecondary, fontSize: 13)),
+                    ])
+                  : SelectableText(
+                      translatedText!,
+                      style: TextStyle(color: colors.textPrimary, fontSize: 14, height: 1.65),
+                    ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
+

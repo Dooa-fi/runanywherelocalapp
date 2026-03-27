@@ -4,8 +4,23 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:audioplayers/audioplayers.dart';
 import '../services/audio_service.dart';
 import '../theme/app_theme.dart';
+import 'package:intl/intl.dart';
 
 enum _RecordState { idle, recording, processing, done }
+
+class MeetingNote {
+  final DateTime timestamp;
+  final String transcript;
+  String summary;
+  bool isStreaming;
+
+  MeetingNote({
+    required this.timestamp,
+    required this.transcript,
+    this.summary = '',
+    this.isStreaming = false,
+  });
+}
 
 class MeetingNotesScreen extends StatefulWidget {
   const MeetingNotesScreen({super.key});
@@ -20,11 +35,11 @@ class _MeetingNotesScreenState extends State<MeetingNotesScreen>
   final AudioPlayer _player = AudioPlayer();
 
   _RecordState _state = _RecordState.idle;
-  String _transcript = '';
-  String _summary = '';
-  bool _summaryStreaming = false;
   String _statusMessage = '';
   bool _ttsLoading = false;
+  
+  // History of notes
+  final List<MeetingNote> _notes = [];
 
   late final AnimationController _rippleCtrl;
 
@@ -62,8 +77,6 @@ class _MeetingNotesScreenState extends State<MeetingNotesScreen>
     }
     setState(() {
       _state = _RecordState.recording;
-      _transcript = '';
-      _summary = '';
       _statusMessage = 'Recording… tap again to stop';
     });
   }
@@ -84,31 +97,39 @@ class _MeetingNotesScreenState extends State<MeetingNotesScreen>
     }
 
     final text = await _audio.transcribe(pcm);
+    
+    // Create new note entry at the top of the history
+    final newNote = MeetingNote(
+      timestamp: DateTime.now(),
+      transcript: text,
+      isStreaming: true,
+    );
+    
     setState(() {
-      _transcript = text;
+      _notes.insert(0, newNote);
       _statusMessage = 'Summarizing with SmolLM2…';
-      _summaryStreaming = true;
-      _summary = '';
     });
 
-    // Stream LLM summary
+    // Stream LLM summary safely into the note
     await for (final token in _audio.summarizeMeeting(text)) {
       if (!mounted) return;
-      setState(() => _summary += token);
+      setState(() {
+        newNote.summary += token;
+      });
     }
 
     setState(() {
       _state = _RecordState.done;
-      _summaryStreaming = false;
-      _statusMessage = 'Done  ✓';
+      newNote.isStreaming = false;
+      _statusMessage = 'Done ✓ - Saved to History';
     });
   }
 
-  Future<void> _playSummary() async {
-    if (_summary.isEmpty) return;
+  Future<void> _playSummary(String summaryText) async {
+    if (summaryText.isEmpty) return;
     setState(() => _ttsLoading = true);
     // Strip markdown for TTS
-    final plainText = _summary
+    final plainText = summaryText
         .replaceAll(RegExp(r'#+\s?'), '')
         .replaceAll(RegExp(r'\*+'), '')
         .replaceAll(RegExp(r'-\s'), '');
@@ -119,15 +140,6 @@ class _MeetingNotesScreenState extends State<MeetingNotesScreen>
     } else {
       _showSnack('TTS not ready — make sure TTS model is loaded');
     }
-  }
-
-  void _reset() {
-    setState(() {
-      _state = _RecordState.idle;
-      _transcript = '';
-      _summary = '';
-      _statusMessage = '';
-    });
   }
 
   void _showSnack(String msg) {
@@ -154,7 +166,7 @@ class _MeetingNotesScreenState extends State<MeetingNotesScreen>
                     icon: Icons.mic_rounded,
                     color: colors.accent,
                     title: 'Meeting Notes',
-                    subtitle: 'Record • Transcribe • Summarize — 100% offline',
+                    subtitle: 'Summarize, save, and playback offline.',
                   ),
                   const SizedBox(height: 28),
 
@@ -185,66 +197,146 @@ class _MeetingNotesScreenState extends State<MeetingNotesScreen>
                   ],
 
                   const SizedBox(height: 28),
-
-                  // Transcript card
-                  if (_transcript.isNotEmpty)
-                    _OutputCard(
-                      title: 'Transcript',
-                      icon: Icons.notes_rounded,
-                      iconColor: colors.textSecondary,
-                      child: SelectableText(
-                        _transcript,
-                        style: TextStyle(
-                          color: colors.textPrimary, fontSize: 14, height: 1.6,
-                        ),
-                      ),
-                    ),
-
-                  // Summary card
-                  if (_summary.isNotEmpty || _summaryStreaming) ...[
-                    const SizedBox(height: 16),
-                    _OutputCard(
-                      title: 'AI Summary',
-                      icon: Icons.auto_awesome_rounded,
-                      iconColor: colors.accent,
-                      trailing: _summaryStreaming
-                        ? _PulsingDot(color: colors.accent)
-                        : Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              // Play button
-                              _IconChip(
-                                icon: _ttsLoading ? Icons.hourglass_top_rounded : Icons.volume_up_rounded,
-                                label: 'Play',
-                                color: colors.accentSecondary,
-                                onTap: _ttsLoading ? null : _playSummary,
-                              ),
-                              const SizedBox(width: 8),
-                              _IconChip(
-                                icon: Icons.refresh_rounded,
-                                label: 'New',
-                                color: colors.textSecondary,
-                                onTap: _reset,
-                              ),
-                            ],
-                          ),
-                      child: MarkdownBody(
-                        data: _summary,
-                        styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-                          p: TextStyle(color: colors.textPrimary, fontSize: 14, height: 1.6),
-                          h2: TextStyle(
-                            color: colors.accent,
-                            fontSize: 15, fontWeight: FontWeight.w700,
-                          ),
-                          listBullet: TextStyle(color: colors.accent),
-                        ),
-                      ),
-                    ),
-                  ],
-
-                  const SizedBox(height: 40),
                 ],
               ),
+            ),
+          ),
+          
+          if (_notes.isEmpty)
+            SliverFillRemaining(
+              hasScrollBody: false,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 40),
+                child: Center(
+                  child: Column(
+                    children: [
+                      Icon(Icons.history_rounded, size: 48, color: colors.textSecondary.withOpacity(0.3)),
+                      const SizedBox(height: 12),
+                      Text('No history yet. Tap to start recording!', 
+                        style: TextStyle(color: colors.textSecondary.withOpacity(0.5))),
+                    ],
+                  ),
+                ),
+              ),
+            )
+          else
+            SliverList(
+              delegate: SliverChildBuilderDelegate(
+                (context, i) {
+                  final note = _notes[i];
+                  return Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 32),
+                    child: _NoteHistoryCard(
+                      note: note,
+                      colors: colors,
+                      ttsLoading: _ttsLoading,
+                      onPlaySummary: () => _playSummary(note.summary),
+                    ),
+                  );
+                },
+                childCount: _notes.length,
+              ),
+            ),
+            
+          const SliverPadding(padding: EdgeInsets.only(bottom: 40)),
+        ],
+      ),
+    );
+  }
+}
+
+class _NoteHistoryCard extends StatelessWidget {
+  final MeetingNote note;
+  final AppColors colors;
+  final bool ttsLoading;
+  final VoidCallback onPlaySummary;
+
+  const _NoteHistoryCard({
+    required this.note,
+    required this.colors,
+    required this.ttsLoading,
+    required this.onPlaySummary,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final dateFormat = DateFormat('MMM d, yyyy • h:mm a').format(note.timestamp);
+    
+    return Container(
+      decoration: BoxDecoration(
+        color: colors.bgCard,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF30363D)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+            child: Row(
+              children: [
+                Icon(Icons.event_note_rounded, color: colors.accent, size: 18),
+                const SizedBox(width: 8),
+                Text(
+                  dateFormat,
+                  style: TextStyle(
+                    color: colors.textSecondary, fontWeight: FontWeight.w600, fontSize: 13,
+                  ),
+                ),
+                const Spacer(),
+                if (!note.isStreaming && note.summary.isNotEmpty)
+                  _IconChip(
+                    icon: ttsLoading ? Icons.hourglass_top_rounded : Icons.volume_up_rounded,
+                    label: 'Play Summary',
+                    color: colors.accentSecondary,
+                    onTap: ttsLoading ? null : onPlaySummary,
+                  ),
+              ],
+            ),
+          ),
+          const Divider(height: 1, thickness: 1, color: Color(0xFF30363D)),
+          
+          // Content
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('TRANSCRIPT', style: TextStyle(color: colors.textSecondary, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 0.8)),
+                const SizedBox(height: 6),
+                SelectableText(
+                  note.transcript,
+                  style: TextStyle(color: colors.textPrimary.withOpacity(0.8), fontSize: 13, height: 1.5),
+                ),
+                
+                const SizedBox(height: 20),
+                
+                Row(
+                  children: [
+                    Text('AI SUMMARY', style: TextStyle(color: colors.accent, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 0.8)),
+                    if (note.isStreaming) ...[
+                      const SizedBox(width: 8),
+                      _PulsingDot(color: colors.accent),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 8),
+                if (note.summary.isEmpty && note.isStreaming)
+                  const Text('Generating...', style: TextStyle(color: Colors.grey, fontStyle: FontStyle.italic))
+                else
+                  MarkdownBody(
+                    data: note.summary,
+                    styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+                      p: TextStyle(color: colors.textPrimary, fontSize: 14, height: 1.6),
+                      h2: TextStyle(
+                        color: colors.accent,
+                        fontSize: 15, fontWeight: FontWeight.w700,
+                      ),
+                      listBullet: TextStyle(color: colors.accent),
+                    ),
+                  ),
+              ],
             ),
           ),
         ],

@@ -76,8 +76,11 @@ class DocumentService {
   Stream<TranslationProgress> translatePages(
     List<PageContent> pages,
     String targetLanguage,
+    {required CancellationFlag cancelFlag}
   ) async* {
     for (int pi = 0; pi < pages.length; pi++) {
+      if (cancelFlag.isCancelled) break;
+      
       final page = pages[pi];
 
       // Skip pages that are just placeholders (scanned)
@@ -98,8 +101,10 @@ class DocumentService {
       final translatedParts = <String>[];
 
       for (int ci = 0; ci < chunks.length; ci++) {
+        if (cancelFlag.isCancelled) break;
+        
         final chunk = chunks[ci];
-        final translated = await _translateChunk(chunk, targetLanguage);
+        final translated = await _translateChunk(chunk, targetLanguage, cancelFlag);
         translatedParts.add(translated);
 
         yield TranslationProgress(
@@ -113,6 +118,8 @@ class DocumentService {
         );
       }
 
+      if (cancelFlag.isCancelled) break;
+      
       yield TranslationProgress(
         pageIndex: pi,
         pageNumber: page.pageNumber,
@@ -125,18 +132,12 @@ class DocumentService {
     }
   }
 
-  Future<String> _translateChunk(String text, String targetLanguage) async {
+  Future<String> _translateChunk(String text, String targetLanguage, CancellationFlag cancelFlag) async {
     if (text.trim().isEmpty) return '';
-    final prompt = '''Translate the following text to $targetLanguage.
-Output ONLY the translated text — no explanations, no notes.
-
-TEXT:
-$text
-
-TRANSLATION:''';
+    // Strict ChatML formatting for instruct models to prevent hallucination
+    final prompt = "<|im_start|>user\nTranslate the following text into $targetLanguage. Output strictly the translated text and absolutely nothing else. No notes, no conversational filler, no tags.\n\n$text<|im_end|>\n<|im_start|>assistant\n";
 
     try {
-      // Use streaming API and collect tokens (generate() returns LLMGenerationResult, not String)
       final result = await RunAnywhere.generateStream(
         prompt,
         options: const LLMGenerationOptions(
@@ -144,12 +145,20 @@ TRANSLATION:''';
           temperature: 0.1,
         ),
       );
+      
       final buffer = StringBuffer();
+      cancelFlag.currentResult = result;
+      
       await for (final token in result.stream) {
+        if (cancelFlag.isCancelled) {
+          result.cancel();
+          break;
+        }
         buffer.write(token);
       }
       return buffer.toString().trim();
     } catch (e) {
+      if (cancelFlag.isCancelled) return '';
       return '[translation error: $e]';
     }
   }
@@ -172,6 +181,16 @@ TRANSLATION:''';
       start = end;
     }
     return chunks.where((c) => c.isNotEmpty).toList();
+  }
+}
+
+class CancellationFlag {
+  bool isCancelled = false;
+  LLMStreamingResult? currentResult;
+
+  void cancel() {
+    isCancelled = true;
+    currentResult?.cancel();
   }
 }
 

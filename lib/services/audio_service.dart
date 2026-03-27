@@ -113,6 +113,28 @@ Output only the Markdown report, nothing else.''';
     }
   }
 
+  /// Translates a short text segment into the target language for live conversation.
+  Future<String> translateShort(String text, String targetLang) async {
+    if (text.trim().isEmpty) return '';
+    final prompt = "<|im_start|>user\nTranslate the following conversational text into $targetLang. Output ONLY the translation and nothing else. No extra tags, notes, or explanations.\n\n$text<|im_end|>\n<|im_start|>assistant\n";
+    try {
+      final result = await RunAnywhere.generateStream(
+        prompt,
+        options: const LLMGenerationOptions(
+          maxTokens: 256,
+          temperature: 0.1,
+        ),
+      );
+      final buffer = StringBuffer();
+      await for (final token in result.stream) {
+        buffer.write(token);
+      }
+      return buffer.toString().trim();
+    } catch (e) {
+      return '[Translation Error: $e]';
+    }
+  }
+
   // ── TTS ───────────────────────────────────────────────────────────────────
 
   /// Synthesize [text] and write WAV bytes to a temp file. Returns file path.
