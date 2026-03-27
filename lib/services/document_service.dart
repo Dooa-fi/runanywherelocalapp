@@ -89,9 +89,7 @@ class DocumentService {
         if (cancelFlag.isCancelled) break;
         
         final chunk = chunks[ci];
-        final translated = await compute((params) {
-          return params.$1.translateText(params.$2);
-        }, (translator, chunk));
+        final translated = await translator.translateText(chunk);
 
         translatedParts.add(translated);
 

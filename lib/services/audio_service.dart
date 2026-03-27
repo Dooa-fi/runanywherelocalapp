@@ -120,10 +120,7 @@ class AudioService {
 
     try {
       final translator = _translators[cacheKey]!;
-      // run in isolate to keep main thread completely unblocked
-      final translated = await compute((params) {
-        return params.$1.translateText(params.$2);
-      }, (translator, text));
+      final translated = await translator.translateText(text);
       return translated;
     } catch (e) {
       return '[Translation Error: $e]';
