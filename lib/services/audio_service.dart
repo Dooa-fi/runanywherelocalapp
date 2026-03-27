@@ -6,7 +6,7 @@ import 'package:record/record.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:vosk_flutter/vosk_flutter.dart';
 import 'package:google_mlkit_translation/google_mlkit_translation.dart';
-import 'model_manager.dart';
+import 'model_manager.dart' as app;
 
 class AudioService {
   final AudioRecorder _recorder = AudioRecorder();
@@ -39,11 +39,11 @@ class AudioService {
     if (detectLang.toLowerCase().contains('spanish') || detectLang.toLowerCase().contains('es')) langCode = 'es';
 
     try {
-      final modelPath = ModelManager.voskPaths[langCode];
+      final modelPath = app.ModelManager.voskPaths[langCode];
       if (modelPath == null) throw Exception('Vosk model for $langCode not loaded');
       
-      _voskModel = await ModelManager.voskPlugin.createModel(modelPath);
-      _recognizer = await ModelManager.voskPlugin.createRecognizer(model: _voskModel!, sampleRate: 16000);
+      _voskModel = await app.ModelManager.voskPlugin.createModel(modelPath);
+      _recognizer = await app.ModelManager.voskPlugin.createRecognizer(model: _voskModel!, sampleRate: 16000);
 
       final stream = await _recorder.startStream(const RecordConfig(
         encoder: AudioEncoder.pcm16bits,

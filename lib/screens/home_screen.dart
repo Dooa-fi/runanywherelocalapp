@@ -32,7 +32,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   void _checkModels() {
-    final ready = ModelManager.sttReady && ModelManager.llmReady;
+    final ready = ModelManager.sttReady && ModelManager.translationReady;
     if (ready) {
       setState(() => _modelsReady = true);
       _fadeCtrl.forward();
