@@ -5,6 +5,19 @@ allprojects {
     }
 }
 
+// Patch third-party plugins that are missing a namespace (e.g. vosk_flutter)
+subprojects {
+    afterEvaluate { proj ->
+        if (proj.plugins.hasPlugin("com.android.library") && !proj.android.namespace) {
+            def manifest = proj.file("src/main/AndroidManifest.xml")
+            if (manifest.exists()) {
+                def pkg = new XmlSlurper().parse(manifest).@package?.toString()
+                if (pkg) proj.android.namespace = pkg
+            }
+        }
+    }
+}
+
 rootProject.buildDir = "../build"
 subprojects {
     project.buildDir = "${rootProject.buildDir}/${project.name}"
