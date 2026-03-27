@@ -62,9 +62,8 @@ class AudioService {
   /// Transcribe PCM16 bytes using RunAnywhere Whisper STT.
   Future<String> transcribe(Uint8List pcmBytes) async {
     try {
-      final result = await RunAnywhere.transcribe(pcmBytes);
-      // SDK returns an object with .text property
-      return result.text ?? '';
+      final String? result = await RunAnywhere.transcribe(pcmBytes);
+      return result ?? '';
     } catch (e) {
       return '[transcription error: $e]';
     }
