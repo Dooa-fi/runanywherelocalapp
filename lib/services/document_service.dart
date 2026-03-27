@@ -1,15 +1,10 @@
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:path/path.dart' as p;
-import 'package:runanywhere/runanywhere.dart';
+import 'package:google_mlkit_translation/google_mlkit_translation.dart';
 
-/// Handles PDF text extraction + LLM translation.
 class DocumentService {
-  // ── PDF Picking ────────────────────────────────────────────────────────────
-
   Future<File?> pickPdf() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
@@ -23,10 +18,6 @@ class DocumentService {
     return File(path);
   }
 
-  // ── Text Extraction ───────────────────────────────────────────────────────
-
-  /// Extract text from each PDF page using native text extraction.
-  /// Scanned/image pages are detected but OCR requires additional setup.
   Future<List<PageContent>> extractPages(File pdfFile) async {
     final bytes = await pdfFile.readAsBytes();
     final pages = <PageContent>[];
@@ -39,7 +30,6 @@ class DocumentService {
     }
 
     for (int i = 0; i < document.pages.count; i++) {
-      // Try native text extraction
       final extractor = PdfTextExtractor(document);
       String text = '';
       try {
@@ -47,17 +37,13 @@ class DocumentService {
       } catch (_) {}
 
       if (text.length > 20) {
-        // Native text found — use it directly
         pages.add(PageContent(pageNumber: i + 1, text: text, isOcr: false));
       } else {
-        // Scanned page — inform that OCR is limited in this MVP
         pages.add(PageContent(
           pageNumber: i + 1,
           text: text.isNotEmpty
               ? text
-              : '[Page ${i + 1} appears to be a scanned image. '
-                'Text-based PDF pages are fully supported. '
-                'Scanned page OCR will be available in a future update.]',
+              : '[Page ${i + 1} appears to be a scanned image. OCR support for scanned documents will be added later.]',
           isOcr: true,
         ));
       }
@@ -67,32 +53,31 @@ class DocumentService {
     return pages;
   }
 
-  // ── Translation ────────────────────────────────────────────────────────────
+  static const int _chunkSize = 1000; 
 
-  static const int _chunkSize = 400; // characters per LLM call
-
-  /// Translate [pages] to [targetLanguage] using on-device LLM.
-  /// Yields translated text progressively as each chunk completes.
   Stream<TranslationProgress> translatePages(
     List<PageContent> pages,
-    String targetLanguage,
+    String targetLangStr,
     {required CancellationFlag cancelFlag}
   ) async* {
+    TranslateLanguage targetLanguage = TranslateLanguage.english;
+    if (targetLangStr.toLowerCase().contains('hi')) targetLanguage = TranslateLanguage.hindi;
+    if (targetLangStr.toLowerCase().contains('es') || targetLangStr.toLowerCase().contains('spanish')) targetLanguage = TranslateLanguage.spanish;
+
+    final translator = OnDeviceTranslator(
+      sourceLanguage: TranslateLanguage.english,
+      targetLanguage: targetLanguage,
+    );
+
     for (int pi = 0; pi < pages.length; pi++) {
       if (cancelFlag.isCancelled) break;
       
       final page = pages[pi];
 
-      // Skip pages that are just placeholders (scanned)
-      if (page.text.startsWith('[Page ') && page.text.endsWith('update.]')) {
+      if (page.text.startsWith('[Page ')) {
         yield TranslationProgress(
-          pageIndex: pi,
-          pageNumber: page.pageNumber,
-          totalPages: pages.length,
-          chunkIndex: 1,
-          totalChunks: 1,
-          partialPageText: page.text,
-          isDone: pi == pages.length - 1,
+          pageIndex: pi, pageNumber: page.pageNumber, totalPages: pages.length,
+          chunkIndex: 1, totalChunks: 1, partialPageText: page.text, isDone: pi == pages.length - 1,
         );
         continue;
       }
@@ -104,63 +89,29 @@ class DocumentService {
         if (cancelFlag.isCancelled) break;
         
         final chunk = chunks[ci];
-        final translated = await _translateChunk(chunk, targetLanguage, cancelFlag);
+        final translated = await compute((params) {
+          return params.$1.translateText(params.$2);
+        }, (translator, chunk));
+
         translatedParts.add(translated);
 
         yield TranslationProgress(
-          pageIndex: pi,
-          pageNumber: page.pageNumber,
-          totalPages: pages.length,
-          chunkIndex: ci + 1,
-          totalChunks: chunks.length,
-          partialPageText: translatedParts.join(' '),
-          isDone: false,
+          pageIndex: pi, pageNumber: page.pageNumber, totalPages: pages.length,
+          chunkIndex: ci + 1, totalChunks: chunks.length,
+          partialPageText: translatedParts.join(' '), isDone: false,
         );
       }
 
       if (cancelFlag.isCancelled) break;
       
       yield TranslationProgress(
-        pageIndex: pi,
-        pageNumber: page.pageNumber,
-        totalPages: pages.length,
-        chunkIndex: chunks.length,
-        totalChunks: chunks.length,
-        partialPageText: translatedParts.join(' '),
-        isDone: pi == pages.length - 1,
+        pageIndex: pi, pageNumber: page.pageNumber, totalPages: pages.length,
+        chunkIndex: chunks.length, totalChunks: chunks.length,
+        partialPageText: translatedParts.join(' '), isDone: pi == pages.length - 1,
       );
     }
-  }
-
-  Future<String> _translateChunk(String text, String targetLanguage, CancellationFlag cancelFlag) async {
-    if (text.trim().isEmpty) return '';
-    // Strict ChatML formatting for instruct models to prevent hallucination
-    final prompt = "<|im_start|>user\nTranslate the following text into $targetLanguage. Output strictly the translated text and absolutely nothing else. No notes, no conversational filler, no tags.\n\n$text<|im_end|>\n<|im_start|>assistant\n";
-
-    try {
-      final result = await RunAnywhere.generateStream(
-        prompt,
-        options: const LLMGenerationOptions(
-          maxTokens: 512,
-          temperature: 0.1,
-        ),
-      );
-      
-      final buffer = StringBuffer();
-      cancelFlag.currentResult = result;
-      
-      await for (final token in result.stream) {
-        if (cancelFlag.isCancelled) {
-          result.cancel();
-          break;
-        }
-        buffer.write(token);
-      }
-      return buffer.toString().trim();
-    } catch (e) {
-      if (cancelFlag.isCancelled) return '';
-      return '[translation error: $e]';
-    }
+    
+    translator.close();
   }
 
   List<String> _splitIntoChunks(String text, int size) {
@@ -169,7 +120,6 @@ class DocumentService {
     while (start < text.length) {
       int end = start + size;
       if (end < text.length) {
-        // Try to break at sentence boundary
         final dot = text.lastIndexOf('.', end);
         final newline = text.lastIndexOf('\n', end);
         final boundary = [dot, newline].where((i) => i > start).fold(-1, (a, b) => b > a ? b : a);
@@ -186,26 +136,16 @@ class DocumentService {
 
 class CancellationFlag {
   bool isCancelled = false;
-  LLMStreamingResult? currentResult;
-
   void cancel() {
     isCancelled = true;
-    currentResult?.cancel();
   }
 }
-
-// ── Data models ───────────────────────────────────────────────────────────────
 
 class PageContent {
   final int pageNumber;
   final String text;
   final bool isOcr;
-
-  const PageContent({
-    required this.pageNumber,
-    required this.text,
-    required this.isOcr,
-  });
+  const PageContent({required this.pageNumber, required this.text, required this.isOcr});
 }
 
 class TranslationProgress {
@@ -216,17 +156,10 @@ class TranslationProgress {
   final int totalChunks;
   final String partialPageText;
   final bool isDone;
-
   const TranslationProgress({
-    required this.pageIndex,
-    required this.pageNumber,
-    required this.totalPages,
-    required this.chunkIndex,
-    required this.totalChunks,
-    required this.partialPageText,
-    required this.isDone,
+    required this.pageIndex, required this.pageNumber, required this.totalPages,
+    required this.chunkIndex, required this.totalChunks, required this.partialPageText, required this.isDone,
   });
-
   double get overallProgress {
     if (totalPages == 0) return 0;
     return (pageIndex + (totalChunks == 0 ? 1.0 : chunkIndex / totalChunks)) / totalPages;

@@ -259,21 +259,15 @@ class _ModelBadge extends StatelessWidget {
   const _ModelBadge({required this.model, required this.colors});
 
   Color get _color {
-    return switch (model) {
-      'STT' => colors.accent,
-      'TTS' => colors.success,
-      'LLM' => colors.accentSecondary,
-      _ => colors.textSecondary,
-    };
+    if (model.contains('Vosk')) return colors.accent;
+    if (model.contains('Translation')) return colors.accentSecondary;
+    return colors.textSecondary;
   }
 
   String get _label {
-    return switch (model) {
-      'STT' => '🎤 Speech-to-Text (Whisper)',
-      'TTS' => '🔊 Text-to-Speech (Piper)',
-      'LLM' => '🧠 Language Model (SmolLM2)',
-      _ => '⚙️ Initialising…',
-    };
+    if (model.contains('Vosk')) return '🎤 Speech Recognition ($model)';
+    if (model.contains('Translation')) return '🌐 Translation Model (ML Kit)';
+    return '⚙️ Initialising…';
   }
 
   @override

@@ -11,15 +11,21 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # RunAnywhere SDK — Core + backends
-  runanywhere: ^0.15.11
-  runanywhere_onnx: ^0.15.11        # STT, TTS, VAD (Whisper + Piper)
-  runanywhere_llamacpp: ^0.15.11    # LLM text generation (llama.cpp)
-
+  # STT: Vosk (Offline Streaming)
+  vosk_flutter: ^3.0.0
+  vosk: ^1.0.0      # Dart FFI core if needed (vosk_flutter usually covers it)
+  
+  # Translation: Google ML Kit (Offline NMT)
+  google_mlkit_translation: ^0.12.0
+  
+  # Downloads & Unzipping
+  http: ^1.2.0
+  archive: ^3.5.0
+  
   # Audio recording
   record: ^5.1.2
   audioplayers: ^6.0.0
-
+  
   # File picking (PDF)
   file_picker: ^8.0.0
 

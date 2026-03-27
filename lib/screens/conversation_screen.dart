@@ -1,9 +1,14 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:audioplayers/audioplayers.dart';
 import '../services/audio_service.dart';
 import '../theme/app_theme.dart';
 
-enum _ConvState { idle, recording, processing, speaking }
+class ChatMessage {
+  final bool isPersonA;
+  String original;
+  String translated;
+  ChatMessage(this.isPersonA, this.original, this.translated);
+}
 
 class ConversationScreen extends StatefulWidget {
   const ConversationScreen({super.key});
@@ -14,143 +19,98 @@ class ConversationScreen extends StatefulWidget {
 
 class _ConversationScreenState extends State<ConversationScreen> {
   final AudioService _audio = AudioService();
-  final AudioPlayer _player = AudioPlayer();
+  final List<ChatMessage> _messages = [];
+  final ScrollController _scrollCtrl = ScrollController();
 
-  // "Top" User (Person A)
   String _langA = 'English';
-  String _textA = 'Tap mic to speak…';
-  
-  // "Bottom" User (Person B)
-  String _langB = 'Hindi';
-  String _textB = 'Tap mic to speak…';
+  String _langB = 'Spanish';
 
-  final _languages = [
-    'English', 'Hindi', 'Spanish', 'French', 'German', 'Portuguese', 'Italian',
-    'Russian', 'Japanese', 'Korean', 'Chinese (Simplified)', 'Arabic',
-  ];
+  final _languages = ['English', 'Hindi', 'Spanish'];
 
-  _ConvState _stateA = _ConvState.idle;
-  _ConvState _stateB = _ConvState.idle;
+  bool _isRecordingA = false;
+  bool _isRecordingB = false;
+  bool _isTranslating = false;
+
+  StreamSubscription<String>? _sub;
 
   @override
   void dispose() {
+    _scrollCtrl.dispose();
+    _sub?.cancel();
     _audio.dispose();
-    _player.dispose();
     super.dispose();
   }
 
-  // ── Logic ──────────────────────────────────────────────────────────────────
-
-  Future<void> _handleMicPress({
-    required bool isPersonA,
-  }) async {
-    // Prevent if the other person is using the mic or currently processing
-    if (isPersonA && _stateB != _ConvState.idle) return;
-    if (!isPersonA && _stateA != _ConvState.idle) return;
-
-    final currentState = isPersonA ? _stateA : _stateB;
-
-    if (currentState == _ConvState.recording) {
-      // Stop recording and process
-      await _stopAndProcess(isPersonA);
-    } else if (currentState == _ConvState.idle) {
-      // Start recording
-      final started = await _audio.startRecording();
-      if (!started) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Microphone permission denied')));
-        return;
-      }
-      setState(() {
-        if (isPersonA) {
-          _stateA = _ConvState.recording;
-          _textA = 'Recording...';
-        } else {
-          _stateB = _ConvState.recording;
-          _textB = 'Recording...';
-        }
-      });
+  void _scrollToBottom() {
+    if (_scrollCtrl.hasClients) {
+      _scrollCtrl.animateTo(
+        _scrollCtrl.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+      );
     }
   }
 
-  Future<void> _stopAndProcess(bool isPersonA) async {
-    setState(() {
-      if (isPersonA) {
-        _stateA = _ConvState.processing;
-        _textA = 'Processing audio...';
-      } else {
-        _stateB = _ConvState.processing;
-        _textB = 'Processing audio...';
-      }
-    });
+  Future<void> _toggleMic(bool isPersonA) async {
+    if ((isPersonA && _isRecordingB) || (!isPersonA && _isRecordingA) || _isTranslating) return;
 
-    final pcm = await _audio.stopRecordingAndGetPcm();
-    if (pcm == null || pcm.isEmpty) {
+    final isRecording = isPersonA ? _isRecordingA : _isRecordingB;
+
+    if (isRecording) {
+      // STOP
+      await _sub?.cancel();
+      final finalStr = await _audio.stopStreamingSTT();
+      
       setState(() {
-        if (isPersonA) {
-          _stateA = _ConvState.idle;
-          _textA = 'Recording too short.';
-        } else {
-          _stateB = _ConvState.idle;
-          _textB = 'Recording too short.';
+        if (isPersonA) _isRecordingA = false; else _isRecordingB = false;
+        if (_messages.isNotEmpty && finalStr.isNotEmpty) {
+          _messages.last.original = finalStr;
+        } else if (_messages.isNotEmpty && finalStr.isEmpty) {
+          _messages.removeLast(); // if empty drop it
         }
+        _isTranslating = finalStr.isNotEmpty;
       });
-      return;
-    }
 
-    // Determine translation target
-    final targetLang = isPersonA ? _langB : _langA;
-
-    // Transcribe
-    setState(() {
-      if (isPersonA) _textA = 'Transcribing...';
-      else _textB = 'Transcribing...';
-    });
-    
-    final originalText = await _audio.transcribe(pcm);
-
-    // Translate
-    setState(() {
-      if (isPersonA) _textA = 'Original: $originalText\n\nTranslating to $targetLang...';
-      else _textB = 'Original: $originalText\n\nTranslating to $targetLang...';
-    });
-
-    final translatedText = await _audio.translateShort(originalText, targetLang);
-
-    setState(() {
-      if (isPersonA) {
-        _textA = 'Original: $originalText\n\nTranslated: $translatedText';
-        _stateA = _ConvState.speaking;
-      } else {
-        _textB = 'Original: $originalText\n\nTranslated: $translatedText';
-        _stateB = _ConvState.speaking;
-      }
-    });
-
-    // Play TTS
-    final path = await _audio.synthesizeSpeech(translatedText);
-    if (path != null) {
-      await _player.play(DeviceFileSource(path));
-      // Wait for it to finish
-      _player.onPlayerComplete.first.then((_) {
+      if (finalStr.isNotEmpty) {
+        final source = isPersonA ? _langA : _langB;
+        final target = isPersonA ? _langB : _langA;
+        final translated = await _audio.translateOffline(finalStr, source, target);
+        
         if (mounted) {
           setState(() {
-            if (isPersonA) _stateA = _ConvState.idle;
-            else _stateB = _ConvState.idle;
+            _messages.last.translated = translated;
+            _isTranslating = false;
           });
+          _scrollToBottom();
+        }
+      }
+    } else {
+      // START
+      final lang = isPersonA ? _langA : _langB;
+      final started = await _audio.startStreamingSTT(lang);
+      
+      if (!started) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Mic Permission Denied')));
+        return;
+      }
+      
+      setState(() {
+        if (isPersonA) _isRecordingA = true; else _isRecordingB = true;
+        _messages.add(ChatMessage(isPersonA, 'Listening...', ''));
+      });
+      _scrollToBottom();
+      
+      _sub = _audio.transcriptStream.listen((text) {
+        if (mounted) {
+          setState(() {
+            _messages.last.original = text;
+          });
+          _scrollToBottom();
         }
       });
-    } else {
-      setState(() {
-        if (isPersonA) _stateA = _ConvState.idle;
-        else _stateB = _ConvState.idle;
-      });
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('TTS error or Model missing.')));
     }
   }
-
-  // ── UI ─────────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -158,153 +118,209 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
     return Scaffold(
       backgroundColor: colors.bgBase,
+      appBar: AppBar(
+        title: const Text('Live Translator'),
+        backgroundColor: colors.bgBase,
+        elevation: 0,
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(60),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: _LangDropdown(
+                    val: _langA,
+                    items: _languages,
+                    colors: colors,
+                    onChanged: (v) => setState(() => _langA = v!),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Icon(Icons.sync_alt_rounded, color: colors.textSecondary),
+                ),
+                Expanded(
+                  child: _LangDropdown(
+                    val: _langB,
+                    items: _languages,
+                    colors: colors,
+                    onChanged: (v) => setState(() => _langB = v!),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
       body: Column(
         children: [
-          // Top Half (Inverted for person opposite you)
           Expanded(
-            child: RotatedBox(
-              quarterTurns: 2, // Rotates 180 degrees so the person sitting across can read it
-              child: _buildHalf(
-                isTop: true,
-                state: _stateA,
-                lang: _langA,
-                text: _textA,
-                languages: _languages,
-                colors: colors,
-                onLangChanged: (v) => setState(() => _langA = v!),
-                onMicTap: () => _handleMicPress(isPersonA: true),
-                disabled: _stateB != _ConvState.idle,
-              ),
-            ),
+            child: _messages.isEmpty
+                ? Center(
+                    child: Text(
+                      'Tap a microphone below to start.',
+                      style: TextStyle(color: colors.textSecondary.withOpacity(0.5)),
+                    ),
+                  )
+                : ListView.builder(
+                    controller: _scrollCtrl,
+                    padding: const EdgeInsets.all(16),
+                    itemCount: _messages.length,
+                    itemBuilder: (context, i) {
+                      final msg = _messages[i];
+                      return _ChatBubble(msg: msg, colors: colors);
+                    },
+                  ),
           ),
-
-          // Divider
-          Container(height: 4, color: const Color(0xFF30363D)),
-
-          // Bottom Half (For you)
-          Expanded(
-            child: _buildHalf(
-              isTop: false,
-              state: _stateB,
-              lang: _langB,
-              text: _textB,
-              languages: _languages,
-              colors: colors,
-              onLangChanged: (v) => setState(() => _langB = v!),
-              onMicTap: () => _handleMicPress(isPersonA: false),
-              disabled: _stateA != _ConvState.idle,
+          if (_isTranslating)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text('Translating...', style: TextStyle(color: colors.textSecondary, fontStyle: FontStyle.italic)),
             ),
-          ),
         ],
       ),
-    );
-  }
-
-  Widget _buildHalf({
-    required bool isTop,
-    required _ConvState state,
-    required String lang,
-    required String text,
-    required List<String> languages,
-    required AppColors colors,
-    required ValueChanged<String?> onLangChanged,
-    required VoidCallback onMicTap,
-    required bool disabled,
-  }) {
-    final bool isActive = state != _ConvState.idle;
-    
-    Color boxColor;
-    if (state == _ConvState.recording) boxColor = colors.error.withOpacity(0.1);
-    else if (state == _ConvState.processing) boxColor = colors.warning.withOpacity(0.1);
-    else if (state == _ConvState.speaking) boxColor = colors.success.withOpacity(0.1);
-    else boxColor = colors.bgCard;
-
-    return Container(
-      color: colors.bgBase,
-      child: SafeArea(
-        bottom: !isTop,
-        top: isTop,
-        child: Padding(
-          padding: const EdgeInsets.all(24.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
+      bottomNavigationBar: SafeArea(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+          color: colors.bgCard,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              // Language Selector
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                decoration: BoxDecoration(
-                  color: colors.bgCard,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFF30363D)),
-                ),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    value: lang,
-                    dropdownColor: colors.bgCard,
-                    style: TextStyle(color: colors.textPrimary, fontWeight: FontWeight.w700, fontSize: 16),
-                    onChanged: (disabled || isActive) ? null : onLangChanged,
-                    items: languages.map((l) => DropdownMenuItem(value: l, child: Text(l))).toList(),
-                  ),
-                ),
+              _MicButton(
+                isRecording: _isRecordingA,
+                colors: colors,
+                color: Colors.blueAccent,
+                label: _langA,
+                onTap: () => _toggleMic(true),
               ),
-
-              const Spacer(),
-
-              // Text Display
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  color: boxColor,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: state == _ConvState.recording ? colors.error : const Color(0xFF30363D)),
-                ),
-                child: Text(
-                  text,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: colors.textPrimary.withOpacity(0.9),
-                    fontSize: 16,
-                    height: 1.5,
-                  ),
-                ),
-              ),
-
-              const Spacer(),
-
-              // Mic Button
-              GestureDetector(
-                onTap: disabled && !isActive ? null : onMicTap,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  width: 80, height: 80,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: disabled && !isActive 
-                        ? colors.bgCard 
-                        : (state == _ConvState.recording ? colors.error : colors.accent),
-                    boxShadow: (state == _ConvState.recording)
-                      ? [BoxShadow(color: colors.error.withOpacity(0.5), blurRadius: 20, spreadRadius: 5)]
-                      : [],
-                  ),
-                  child: Icon(
-                    state == _ConvState.recording ? Icons.stop_rounded : Icons.mic_rounded,
-                    color: disabled && !isActive ? colors.textSecondary : colors.bgBase,
-                    size: 36,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                state == _ConvState.recording ? 'Tap to Stop' : 'Tap to Speak',
-                style: TextStyle(
-                  color: disabled && !isActive ? colors.textSecondary : colors.accent, 
-                  fontWeight: FontWeight.w600, 
-                  fontSize: 12
-                ),
+              _MicButton(
+                isRecording: _isRecordingB,
+                colors: colors,
+                color: Colors.greenAccent,
+                label: _langB,
+                onTap: () => _toggleMic(false),
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LangDropdown extends StatelessWidget {
+  final String val;
+  final List<String> items;
+  final AppColors colors;
+  final ValueChanged<String?> onChanged;
+
+  const _LangDropdown({required this.val, required this.items, required this.colors, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: colors.bgCard,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFF30363D)),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: val,
+          isExpanded: true,
+          dropdownColor: colors.bgCard,
+          style: TextStyle(color: colors.textPrimary, fontWeight: FontWeight.w600),
+          items: items.map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
+          onChanged: onChanged,
+        ),
+      ),
+    );
+  }
+}
+
+class _MicButton extends StatelessWidget {
+  final bool isRecording;
+  final AppColors colors;
+  final Color color;
+  final String label;
+  final VoidCallback onTap;
+
+  const _MicButton({required this.isRecording, required this.colors, required this.color, required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        GestureDetector(
+          onTap: onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            width: 72, height: 72,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: isRecording ? colors.error : color.withOpacity(0.15),
+              border: Border.all(color: isRecording ? Colors.transparent : color, width: 2),
+              boxShadow: isRecording ? [BoxShadow(color: colors.error.withOpacity(0.5), blurRadius: 20)] : [],
+            ),
+            child: Icon(
+              isRecording ? Icons.stop_rounded : Icons.mic_rounded,
+              color: isRecording ? Colors.white : color, size: 32,
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(label, style: TextStyle(color: colors.textSecondary, fontSize: 13, fontWeight: FontWeight.w600)),
+      ],
+    );
+  }
+}
+
+class _ChatBubble extends StatelessWidget {
+  final ChatMessage msg;
+  final AppColors colors;
+
+  const _ChatBubble({required this.msg, required this.colors});
+
+  @override
+  Widget build(BuildContext context) {
+    final alignRight = !msg.isPersonA;
+    final bubbleColor = msg.isPersonA ? Colors.blueAccent.withOpacity(0.15) : Colors.greenAccent.withOpacity(0.15);
+    final borderColor = msg.isPersonA ? Colors.blueAccent.withOpacity(0.3) : Colors.greenAccent.withOpacity(0.3);
+
+    return Align(
+      alignment: alignRight ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 16),
+        padding: const EdgeInsets.all(16),
+        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+        decoration: BoxDecoration(
+          color: bubbleColor,
+          borderRadius: BorderRadius.circular(16).copyWith(
+            bottomLeft: alignRight ? const Radius.circular(16) : Radius.zero,
+            bottomRight: alignRight ? Radius.zero : const Radius.circular(16),
+          ),
+          border: Border.all(color: borderColor),
+        ),
+        child: Column(
+          crossAxisAlignment: alignRight ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+          children: [
+            Text(
+              msg.original,
+              style: TextStyle(color: colors.textPrimary, fontSize: 14),
+              textAlign: alignRight ? TextAlign.right : TextAlign.left,
+            ),
+            if (msg.translated.isNotEmpty) ...[
+              const Divider(color: Colors.white24, height: 16),
+              Text(
+                msg.translated,
+                style: TextStyle(color: colors.accent, fontSize: 14, fontWeight: FontWeight.w600),
+                textAlign: alignRight ? TextAlign.right : TextAlign.left,
+              ),
+            ]
+          ],
         ),
       ),
     );

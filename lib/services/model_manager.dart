@@ -1,165 +1,100 @@
-import 'package:runanywhere/runanywhere.dart';
-import 'package:runanywhere_onnx/runanywhere_onnx.dart';
-import 'package:runanywhere_llamacpp/runanywhere_llamacpp.dart';
-
-/// Central place to register & manage all AI models.
-/// Model IDs and URLs match the official RunAnywhere starter example.
-class ModelManager {
-  // ── Model IDs (must match official SDK model registry) ────────────────────
-  static const String sttModelId = 'sherpa-onnx-whisper-tiny.en';
-  static const String llmModelId = 'smollm2-360m-instruct-q8_0';
-  static const String ttsModelId = 'vits-piper-en_US-lessac-medium';
-
-  /// Register all models with their backends. Call once after SDK init.
-  static void registerModels() {
-    // ── STT: Whisper Tiny English ──────────────────────────────────────────
-    Onnx.addModel(
-      id: sttModelId,
-      name: 'Sherpa Whisper Tiny (ONNX)',
-      url: 'https://github.com/RunanywhereAI/sherpa-onnx/releases/download/'
-          'runanywhere-models-v1/sherpa-onnx-whisper-tiny.en.tar.gz',
-      modality: ModelCategory.speechRecognition,
-    );
-
-    // ── TTS: Piper Lessac Medium ──────────────────────────────────────────
-    Onnx.addModel(
-      id: ttsModelId,
-      name: 'Piper TTS (US English - Medium)',
-      url: 'https://github.com/RunanywhereAI/sherpa-onnx/releases/download/'
-          'runanywhere-models-v1/vits-piper-en_US-lessac-medium.tar.gz',
-      modality: ModelCategory.speechSynthesis,
-    );
-
-    // ── LLM: SmolLM2 360M Q8 ─────────────────────────────────────────────
-    LlamaCpp.addModel(
-      id: llmModelId,
-      name: 'SmolLM2 360M Instruct Q8_0',
-      url: 'https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF/'
-          'resolve/main/smollm2-360m-instruct-q8_0.gguf',
-      memoryRequirement: 400000000, // ~400 MB
-    );
-  }
-
-  // ── State helpers ─────────────────────────────────────────────────────────
-  static bool get sttReady => RunAnywhere.isSTTModelLoaded;
-  static bool get ttsReady => RunAnywhere.isTTSVoiceLoaded;
-  static bool get llmReady => RunAnywhere.isModelLoaded;
-
-  /// Check if a specific model has been downloaded already.
-  static Future<bool> isModelDownloaded(String modelId) async {
-    final models = await RunAnywhere.availableModels();
-    final model = models.where((m) => m.id == modelId).firstOrNull;
-    return model?.localPath != null;
-  }
-
-  // ── Download + load all models ────────────────────────────────────────────
-
-  /// Downloads and loads STT, LLM, and optionally TTS.
-  /// Yields [ModelLoadEvent] for UI progress tracking.
-  /// TTS failure is non-fatal — the rest of the app still works.
-  static Stream<ModelLoadEvent> loadAll() async* {
-    // ── 1. STT ──────────────────────────────────────────────────────────────
-    yield ModelLoadEvent(model: 'STT', phase: 'Checking STT model…', progress: 0);
-    final sttDownloaded = await isModelDownloaded(sttModelId);
-
-    if (!sttDownloaded) {
-      yield ModelLoadEvent(model: 'STT', phase: 'Downloading Whisper…', progress: 0);
-      try {
-        await for (final p in RunAnywhere.downloadModel(sttModelId)) {
-          yield ModelLoadEvent(
-            model: 'STT', phase: 'Downloading Whisper…', progress: p.percentage,
-          );
-          if (p.state.isCompleted || p.state.isFailed) break;
-        }
-      } catch (e) {
-        yield ModelLoadEvent(model: 'STT', phase: 'STT download error: $e', progress: 0);
-        rethrow;
-      }
-    }
-
-    yield ModelLoadEvent(model: 'STT', phase: 'Loading Whisper…', progress: 1.0);
-    try {
-      await RunAnywhere.loadSTTModel(sttModelId);
-    } catch (e) {
-      yield ModelLoadEvent(model: 'STT', phase: 'STT load error: $e', progress: 0);
-      rethrow;
-    }
-
-    // ── 2. LLM ──────────────────────────────────────────────────────────────
-    yield ModelLoadEvent(model: 'LLM', phase: 'Checking LLM model…', progress: 0);
-    final llmDownloaded = await isModelDownloaded(llmModelId);
-
-    if (!llmDownloaded) {
-      yield ModelLoadEvent(model: 'LLM', phase: 'Downloading SmolLM2…', progress: 0);
-      try {
-        await for (final p in RunAnywhere.downloadModel(llmModelId)) {
-          yield ModelLoadEvent(
-            model: 'LLM', phase: 'Downloading SmolLM2…', progress: p.percentage,
-          );
-          if (p.state.isCompleted || p.state.isFailed) break;
-        }
-      } catch (e) {
-        yield ModelLoadEvent(model: 'LLM', phase: 'LLM download error: $e', progress: 0);
-        rethrow;
-      }
-    }
-
-    yield ModelLoadEvent(model: 'LLM', phase: 'Loading SmolLM2…', progress: 1.0);
-    try {
-      await RunAnywhere.loadModel(llmModelId);
-    } catch (e) {
-      yield ModelLoadEvent(model: 'LLM', phase: 'LLM load error: $e', progress: 0);
-      rethrow;
-    }
-
-    // ── 3. TTS (optional — failure is non-fatal) ────────────────────────────
-    yield ModelLoadEvent(model: 'TTS', phase: 'Checking TTS model…', progress: 0);
-    try {
-      final ttsDownloaded = await isModelDownloaded(ttsModelId);
-
-      if (!ttsDownloaded) {
-        yield ModelLoadEvent(model: 'TTS', phase: 'Downloading TTS voice…', progress: 0);
-        await for (final p in RunAnywhere.downloadModel(ttsModelId)) {
-          yield ModelLoadEvent(
-            model: 'TTS', phase: 'Downloading TTS voice…', progress: p.percentage,
-          );
-          if (p.state.isCompleted || p.state.isFailed) break;
-        }
-      }
-
-      yield ModelLoadEvent(model: 'TTS', phase: 'Loading TTS voice…', progress: 1.0);
-      await RunAnywhere.loadTTSVoice(ttsModelId);
-    } catch (e) {
-      // TTS failure is non-fatal — app works fine without it
-      yield ModelLoadEvent(model: 'TTS', phase: 'TTS skipped (optional): $e', progress: 1.0);
-    }
-
-    yield ModelLoadEvent(
-      model: 'ALL', phase: 'All models ready!', progress: 1.0, done: true,
-    );
-  }
-}
-
-// ── Event class ──────────────────────────────────────────────────────────────
+import 'dart:io';
+import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:http/http.dart' as http;
+import 'package:archive/archive.dart';
+import 'package:vosk_flutter/vosk_flutter.dart';
+import 'package:google_mlkit_translation/google_mlkit_translation.dart';
+import 'package:path/path.dart' as p;
 
 class ModelLoadEvent {
   final String model;
   final String phase;
   final double progress;
   final bool done;
-
-  const ModelLoadEvent({
-    required this.model,
-    required this.phase,
-    required this.progress,
-    this.done = false,
-  });
+  const ModelLoadEvent({required this.model, required this.phase, required this.progress, this.done = false});
 }
 
-// ── Extension from official RunAnywhere starter ──────────────────────────────
+class ModelManager {
+  static const Map<String, String> voskUrls = {
+    'en': 'https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip',
+    'hi': 'https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip',
+    'es': 'https://alphacephei.com/vosk/models/vosk-model-small-es-0.42.zip',
+  };
 
-extension DownloadProgressStateExt on DownloadProgressState {
-  bool get isCompleted => this == DownloadProgressState.completed;
-  bool get isFailed => this == DownloadProgressState.failed;
-  bool get isCancelled => this == DownloadProgressState.cancelled;
+  static final Map<String, String> voskPaths = {};
+  static late final VoskFlutterPlugin voskPlugin;
+
+  static bool sttReady = false;
+  static bool translationReady = false;
+
+  /// Loads/Downloads Vosk models and MLKit models
+  static Stream<ModelLoadEvent> loadAll() async* {
+    sttReady = false;
+    translationReady = false;
+    
+    // 1. Setup Vosk STT Models
+    voskPlugin = VoskFlutterPlugin.instance();
+    final appDir = await getApplicationDocumentsDirectory();
+    final modelsDir = Directory(p.join(appDir.path, 'vosk_models'));
+    if (!modelsDir.existsSync()) modelsDir.createSync(recursive: true);
+
+    for (final entry in voskUrls.entries) {
+      final lang = entry.key;
+      final url = entry.value;
+      final zipName = p.basename(url);
+      final modelFolderName = zipName.replaceAll('.zip', '');
+      final currentModelDir = Directory(p.join(modelsDir.path, modelFolderName));
+
+      if (!currentModelDir.existsSync()) {
+        yield ModelLoadEvent(model: 'Vosk ($lang)', phase: 'Downloading STT ($lang)...', progress: 0.1);
+        
+        final zipFile = File(p.join(modelsDir.path, zipName));
+        final response = await http.get(Uri.parse(url));
+        await zipFile.writeAsBytes(response.bodyBytes);
+        
+        yield ModelLoadEvent(model: 'Vosk ($lang)', phase: 'Extracting STT ($lang)...', progress: 0.5);
+        final bytes = zipFile.readAsBytesSync();
+        final archive = ZipDecoder().decodeBytes(bytes);
+        
+        for (final file in archive) {
+          final filename = file.name;
+          if (file.isFile) {
+            final data = file.content as List<int>;
+            File(p.join(modelsDir.path, filename))
+              ..createSync(recursive: true)
+              ..writeAsBytesSync(data);
+          } else {
+            Directory(p.join(modelsDir.path, filename)).createSync(recursive: true);
+          }
+        }
+        zipFile.deleteSync();
+      }
+      
+      voskPaths[lang] = currentModelDir.path;
+      yield ModelLoadEvent(model: 'Vosk ($lang)', phase: 'Loaded STT ($lang)', progress: 1.0);
+    }
+    
+    sttReady = true;
+
+    // 2. Setup Translation Models
+    yield ModelLoadEvent(model: 'Translation', phase: 'Checking Translation Models...', progress: 0.0);
+    final modelManager = OnDeviceTranslatorModelManager();
+    
+    yield ModelLoadEvent(model: 'Translation', phase: 'Checking Hindi translation pack...', progress: 0.3);
+    final isHiDownloaded = await modelManager.isModelDownloaded(TranslateLanguage.hindi.bcpCode);
+    if (!isHiDownloaded) {
+      await modelManager.downloadModel(TranslateLanguage.hindi.bcpCode);
+    }
+    
+    yield ModelLoadEvent(model: 'Translation', phase: 'Checking Spanish translation pack...', progress: 0.6);
+    final isEsDownloaded = await modelManager.isModelDownloaded(TranslateLanguage.spanish.bcpCode);
+    if (!isEsDownloaded) {
+      await modelManager.downloadModel(TranslateLanguage.spanish.bcpCode);
+    }
+    
+    translationReady = true;
+
+    yield ModelLoadEvent(model: 'ALL', phase: 'All models ready!', progress: 1.0, done: true);
+  }
 }

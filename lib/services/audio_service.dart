@@ -1,194 +1,143 @@
-import 'dart:io';
+import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:record/record.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:path/path.dart' as p;
-import 'package:runanywhere/runanywhere.dart';
+import 'package:vosk_flutter/vosk_flutter.dart';
+import 'package:google_mlkit_translation/google_mlkit_translation.dart';
+import 'model_manager.dart';
 
-/// Manages audio recording + STT transcription using RunAnywhere SDK.
 class AudioService {
   final AudioRecorder _recorder = AudioRecorder();
-  String? _recordingPath;
+  StreamSubscription<Uint8List>? _micSub;
+  
+  Model? _voskModel;
+  Recognizer? _recognizer;
+  
+  String _bufferedTranscript = '';
+  final _transcriptStreamController = StreamController<String>.broadcast();
 
-  // ── Permissions ────────────────────────────────────────────────────────────
+  final Map<String, OnDeviceTranslator> _translators = {};
 
   Future<bool> requestMicPermission() async {
     final status = await Permission.microphone.request();
     return status.isGranted;
   }
 
-  // ── Recording lifecycle ────────────────────────────────────────────────────
+  // ── Recording & Vosk STT ──────────────────────────────────────────────────
 
-  /// Start capturing audio. Returns [false] if permission denied.
-  Future<bool> startRecording() async {
+  /// Starts streaming mic audio into Vosk
+  Future<bool> startStreamingSTT(String detectLang) async {
     if (!await requestMicPermission()) return false;
+    
+    _bufferedTranscript = '';
+    
+    // Convert 'Hindi' to 'hi' to match paths
+    String langCode = 'en';
+    if (detectLang.toLowerCase().contains('hi')) langCode = 'hi';
+    if (detectLang.toLowerCase().contains('spanish') || detectLang.toLowerCase().contains('es')) langCode = 'es';
 
-    final dir = await getTemporaryDirectory();
-    _recordingPath = p.join(
-      dir.path,
-      'rec_${DateTime.now().millisecondsSinceEpoch}.wav',
-    );
-
-    await _recorder.start(
-      const RecordConfig(
-        encoder: AudioEncoder.wav, // raw PCM16 wrapped in WAV
-        sampleRate: 16000,         // Whisper expects 16 kHz
-        numChannels: 1,            // mono
-      ),
-      path: _recordingPath!,
-    );
-    return true;
-  }
-
-  /// Stop recording and return raw PCM16 bytes ready for Whisper.
-  Future<Uint8List?> stopRecordingAndGetPcm() async {
-    final path = await _recorder.stop();
-    if (path == null) return null;
-
-    final file = File(path);
-    if (!file.existsSync()) return null;
-
-    final bytes = await file.readAsBytes();
-
-    // WAV header = 44 bytes; strip it to expose raw PCM16 payload
-    return bytes.length > 44 ? bytes.sublist(44) : bytes;
-  }
-
-  Future<bool> get isRecording => _recorder.isRecording();
-
-  // ── Transcription ──────────────────────────────────────────────────────────
-
-  /// Transcribe PCM16 bytes using RunAnywhere Whisper STT.
-  Future<String> transcribe(Uint8List pcmBytes) async {
     try {
-      final String? result = await RunAnywhere.transcribe(pcmBytes);
-      return result ?? '';
-    } catch (e) {
-      return '[transcription error: $e]';
+      final modelPath = ModelManager.voskPaths[langCode];
+      if (modelPath == null) throw Exception('Vosk model for $langCode not loaded');
+      
+      _voskModel = await ModelManager.voskPlugin.createModel(modelPath);
+      _recognizer = await ModelManager.voskPlugin.createRecognizer(model: _voskModel!, sampleRate: 16000);
+
+      final stream = await _recorder.startStream(const RecordConfig(
+        encoder: AudioEncoder.pcm16bits,
+        sampleRate: 16000,
+        numChannels: 1,
+      ));
+
+      _micSub = stream.listen((data) async {
+        if (_recognizer == null) return;
+        
+        final isFinal = await _recognizer!.acceptWaveformBytes(data);
+        if (isFinal) {
+          final resultString = await _recognizer!.getResult();
+          final parsed = jsonDecode(resultString);
+          final text = parsed['text'] as String? ?? '';
+          if (text.isNotEmpty) {
+            _bufferedTranscript += '$text ';
+            _transcriptStreamController.add(_bufferedTranscript);
+          }
+        }
+      });
+      return true;
+    } catch(e) {
+      debugPrint('Vosk Start Error: $e');
+      return false;
     }
   }
 
-  // ── LLM helpers ───────────────────────────────────────────────────────────
+  Stream<String> get transcriptStream => _transcriptStreamController.stream;
 
-  /// Stream meeting summary + key points + action items from the transcript.
-  Stream<String> summarizeMeeting(String transcript) {
-    final prompt = '''You are a professional meeting assistant.
-
-Below is a raw meeting transcript. Produce a concise structured report in Markdown with exactly these three sections:
-
-## Summary
-A 3-5 sentence overview of what was discussed.
-
-## Key Points
-- Bullet-point list of the most important topics covered.
-
-## Action Items
-- Bullet-point list of concrete next steps with owner names if mentioned.
-
-TRANSCRIPT:
----
-$transcript
----
-
-Output only the Markdown report, nothing else.''';
-
-    return _streamLLM(prompt);
-  }
-
-  Stream<String> _streamLLM(String prompt) async* {
-    try {
-      final result = await RunAnywhere.generateStream(
-        prompt,
-        options: const LLMGenerationOptions(
-          maxTokens: 600,
-          temperature: 0.3,
-        ),
-      );
-      await for (final token in result.stream) {
-        yield token;
+  Future<String> stopStreamingSTT() async {
+    await _micSub?.cancel();
+    await _recorder.stop();
+    
+    if (_recognizer != null) {
+      final res = await _recognizer!.getFinalResult();
+      final parsed = jsonDecode(res);
+      final text = parsed['text'] as String? ?? '';
+      if (text.isNotEmpty) {
+        _bufferedTranscript += text;
       }
-    } catch (e) {
-      yield '\n\n[LLM error: $e]';
+      _recognizer!.dispose();
+      _recognizer = null;
     }
+    
+    if (_voskModel != null) {
+      _voskModel!.dispose();
+      _voskModel = null;
+    }
+    
+    return _bufferedTranscript.trim();
   }
 
-  /// Translates a short text segment into the target language for live conversation.
-  Future<String> translateShort(String text, String targetLang) async {
+  // ── Translation (ML Kit) ──────────────────────────────────────────────────
+
+  /// Uses ML Kit to instantly translate offline
+  Future<String> translateOffline(String text, String sourceLang, String targetLang) async {
     if (text.trim().isEmpty) return '';
-    final prompt = "<|im_start|>user\nTranslate the following conversational text into $targetLang. Output ONLY the translation and nothing else. No extra tags, notes, or explanations.\n\n$text<|im_end|>\n<|im_start|>assistant\n";
+
+    TranslateLanguage parseLang(String l) {
+      l = l.toLowerCase();
+      if (l.contains('hi')) return TranslateLanguage.hindi;
+      if (l.contains('spanish') || l.contains('es')) return TranslateLanguage.spanish;
+      return TranslateLanguage.english;
+    }
+
+    final source = parseLang(sourceLang);
+    final target = parseLang(targetLang);
+    final cacheKey = '${source.bcpCode}_${target.bcpCode}';
+
+    if (!_translators.containsKey(cacheKey)) {
+      _translators[cacheKey] = OnDeviceTranslator(sourceLanguage: source, targetLanguage: target);
+    }
+
     try {
-      final result = await RunAnywhere.generateStream(
-        prompt,
-        options: const LLMGenerationOptions(
-          maxTokens: 256,
-          temperature: 0.1,
-        ),
-      );
-      final buffer = StringBuffer();
-      await for (final token in result.stream) {
-        buffer.write(token);
-      }
-      return buffer.toString().trim();
+      final translator = _translators[cacheKey]!;
+      // run in isolate to keep main thread completely unblocked
+      final translated = await compute((params) {
+        return params.$1.translateText(params.$2);
+      }, (translator, text));
+      return translated;
     } catch (e) {
       return '[Translation Error: $e]';
     }
   }
 
-  // ── TTS ───────────────────────────────────────────────────────────────────
-
-  /// Synthesize [text] and write WAV bytes to a temp file. Returns file path.
-  Future<String?> synthesizeSpeech(String text) async {
-    try {
-      final result = await RunAnywhere.synthesize(text, rate: 1.0, pitch: 1.0);
-      final dir = await getTemporaryDirectory();
-      final wavPath = p.join(dir.path, 'tts_${DateTime.now().millisecondsSinceEpoch}.wav');
-      final wavBytes = _samplesToWav(result.samples, result.sampleRate);
-      await File(wavPath).writeAsBytes(wavBytes);
-      return wavPath;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  /// Convert raw float32 samples → 16-bit PCM WAV bytes.
-  Uint8List _samplesToWav(List<double> samples, int sampleRate) {
-    final pcm16 = Int16List(samples.length);
-    for (int i = 0; i < samples.length; i++) {
-      pcm16[i] = (samples[i].clamp(-1.0, 1.0) * 32767).round();
-    }
-    final pcmBytes = pcm16.buffer.asUint8List();
-    final dataSize = pcmBytes.length;
-    final header = ByteData(44);
-
-    // RIFF header
-    header.setUint8(0, 0x52); header.setUint8(1, 0x49);
-    header.setUint8(2, 0x46); header.setUint8(3, 0x46); // "RIFF"
-    header.setUint32(4, 36 + dataSize, Endian.little);
-    header.setUint8(8, 0x57); header.setUint8(9, 0x41);
-    header.setUint8(10, 0x56); header.setUint8(11, 0x45); // "WAVE"
-    // fmt chunk
-    header.setUint8(12, 0x66); header.setUint8(13, 0x6D);
-    header.setUint8(14, 0x74); header.setUint8(15, 0x20); // "fmt "
-    header.setUint32(16, 16, Endian.little);  // chunk size
-    header.setUint16(20, 1, Endian.little);   // PCM
-    header.setUint16(22, 1, Endian.little);   // mono
-    header.setUint32(24, sampleRate, Endian.little);
-    header.setUint32(28, sampleRate * 2, Endian.little); // byte rate
-    header.setUint16(32, 2, Endian.little);   // block align
-    header.setUint16(34, 16, Endian.little);  // bits per sample
-    // data chunk
-    header.setUint8(36, 0x64); header.setUint8(37, 0x61);
-    header.setUint8(38, 0x74); header.setUint8(39, 0x61); // "data"
-    header.setUint32(40, dataSize, Endian.little);
-
-    final wavBytes = Uint8List(44 + dataSize);
-    wavBytes.setRange(0, 44, header.buffer.asUint8List());
-    wavBytes.setRange(44, 44 + dataSize, pcmBytes);
-    return wavBytes;
-  }
-
   void dispose() {
     _recorder.dispose();
+    _micSub?.cancel();
+    _recognizer?.dispose();
+    _voskModel?.dispose();
+    _transcriptStreamController.close();
+    for (var t in _translators.values) {
+      t.close();
+    }
   }
 }
