@@ -13,7 +13,6 @@ dependencies:
 
   # STT: Vosk (Offline Streaming)
   vosk_flutter: ^3.0.0
-  vosk: ^1.0.0      # Dart FFI core if needed (vosk_flutter usually covers it)
   
   # Translation: Google ML Kit (Offline NMT)
   google_mlkit_translation: ^0.12.0
